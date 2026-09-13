@@ -78,4 +78,3 @@ This project is licensed under the MIT License.
 
 
 
-**GitHub repository-யை உங்கள் actual Stata medical research workflow-க்கு ready செய்வது — `config.do` file மூலம் dataset path, output path, project settings ஒரே இடத்தில் manage செய்வது.**
