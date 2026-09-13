@@ -1,35 +1,28 @@
 # Medical Data Analysis using Stata
 
-Reusable templates for clinical and epidemiological data analysis using Stata.
+A reproducible framework for clinical and medical research data analysis using Stata.
 
-## Workflow
+## Project Overview
 
-1. Data management and quality checks
-2. Descriptive statistics and Table 1
-3. Association analysis
-4. Regression analysis
-5. Diagnostic accuracy analysis
-6. Visualization
-7. Reproducible outputs
+This repository contains reusable Stata scripts for data management, descriptive analysis, association analysis, regression modelling, diagnostic accuracy analysis, and data visualization.
 
-## Folder Structure
+The framework is designed for medical and public health research projects.
 
-- 01_Data_Management
-- 02_Descriptive_Analysis
-- 03_Association_Analysis
-- 04_Regression
-- 05_Diagnostic_Analysis
-- 06_Visualization
-- 07_Output
-- data
+## Analysis Workflow
 
-## Data Privacy
-
-Do not upload patient-identifiable, confidential, or restricted clinical data to this repository.
-
-Use synthetic or fully de-identified data for examples.
-
-## Software
-
-- Stata
-- GitHub
+```text
+Data
+  ↓
+Data Management
+  ↓
+Descriptive Analysis
+  ↓
+Association Analysis
+  ↓
+Regression Analysis
+  ↓
+Diagnostic Analysis
+  ↓
+Visualization
+  ↓
+Final Results
