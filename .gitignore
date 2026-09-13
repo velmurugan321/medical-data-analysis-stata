@@ -1,0 +1,20 @@
+# Patient / confidential data
+*.dta
+*.xlsx
+*.csv
+*.sav
+*.sas7bdat
+
+# Stata output
+*.log
+*.smcl
+*.gph
+*.ster
+
+# Temporary files
+*.tmp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
