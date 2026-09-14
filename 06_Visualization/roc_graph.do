@@ -1,37 +1,41 @@
 *******************************************************
 * Medical Data Analysis using Stata
 * File: roc_graph.do
-* Purpose: ROC curve visualization
+* Purpose: Reproducible ROC curve visualization
 *******************************************************
 
 clear all
 set more off
+version 15.0
 
-*------------------------------------------------------*
-* 1. Load cleaned dataset
-*------------------------------------------------------*
+* USER SETTINGS ---------------------------------------*
+local datafile "data/cleaned_dataset.dta"
+local reference "reference_standard"
+local testvalue "test_value"
+local outdir "07_Output"
 
-* use "data/cleaned_dataset.dta", clear
+capture confirm file "`datafile'"
+if _rc {
+    di as error "Dataset not found: `datafile'"
+    exit 601
+}
+use "`datafile'", clear
 
-*------------------------------------------------------*
-* 2. Generate ROC curve
-*------------------------------------------------------*
+capture confirm variable `reference'
+if _rc exit 111
+capture confirm variable `testvalue'
+if _rc exit 111
 
-* Replace these variable names with actual variables
+capture mkdir "`outdir'"
 
-* roctab reference_standard test_value, graph
+* ROC curve with AUC and graph
+roctab `reference' `testvalue', summary graph
 
-*------------------------------------------------------*
-* 3. Save ROC graph
-*------------------------------------------------------*
+* Export publication-ready image
+capture graph export "`outdir'/roc_curve.png", replace width(1800)
 
-* graph export "07_Output/roc_curve.png", replace
-
-*------------------------------------------------------*
-* 4. Compare multiple diagnostic tests
-*------------------------------------------------------*
-
-* roccomp reference_standard test1 test2, graph
+* Multiple-test comparison template
+* roccomp `reference' test1 test2, graph
 
 *******************************************************
 * End of file
