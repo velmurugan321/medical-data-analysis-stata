@@ -38,20 +38,50 @@ th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left}
 document.getElementById("file").onchange=function(e){
 let f=e.target.files[0];
 if(!f)return;
+
 let r=new FileReader();
+
 r.onload=function(){
 let rows=r.result.trim().split(/\r?\n/);
 let head=rows[0].split(",");
-document.getElementById("status").innerText=
-"Dataset loaded: "+(rows.length-1)+" records";
+let data=rows.slice(1).map(x=>x.split(","));
 
-let html="<table><tr><th>Variable</th><th>Type</th></tr>";
-head.forEach(function(x){
-html+="<tr><td>"+x+"</td><td>Detected</td></tr>";
+document.getElementById("status").innerText=
+"Dataset loaded: "+data.length+" records";
+
+let html="<table><tr><th>Variable</th><th>N</th><th>Mean</th><th>SD</th><th>Median</th><th>Min</th><th>Max</th></tr>";
+
+head.forEach(function(name,j){
+
+let values=data.map(x=>parseFloat(x[j]))
+.filter(x=>!isNaN(x));
+
+if(values.length>0){
+
+let n=values.length;
+let mean=values.reduce((a,b)=>a+b,0)/n;
+
+let sd=Math.sqrt(
+values.reduce((a,b)=>a+Math.pow(b-mean,2),0)/(n-1)
+);
+
+let sorted=[...values].sort((a,b)=>a-b);
+let median=sorted[Math.floor(n/2)];
+
+html+="<tr><td>"+name+"</td><td>"+n+
+"</td><td>"+mean.toFixed(2)+
+"</td><td>"+sd.toFixed(2)+
+"</td><td>"+median.toFixed(2)+
+"</td><td>"+Math.min(...values)+
+"</td><td>"+Math.max(...values)+"</td></tr>";
+}
+
 });
+
 html+="</table>";
 document.getElementById("result").innerHTML=html;
 };
+
 r.readAsText(f);
 };
 </script>
