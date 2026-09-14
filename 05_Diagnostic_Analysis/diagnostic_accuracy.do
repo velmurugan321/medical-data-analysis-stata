@@ -1,72 +1,114 @@
 *******************************************************
 * Medical Data Analysis using Stata
 * File: diagnostic_accuracy.do
-* Purpose: Diagnostic accuracy with 2x2 table metrics
+* Purpose: Reproducible diagnostic accuracy analysis
 *******************************************************
 
 clear all
 set more off
+version 15.0
 
 *======================================================*
-* 1. LOAD DATA
+* 1. CONFIGURATION
 *======================================================*
-* use "data/cleaned_dataset.dta", clear
+local datafile "data/cleaned_dataset.dta"
+local reference "reference_standard"
+local index "index_test"
+local outdir "07_Output"
+
+capture confirm file "`datafile'"
+if _rc {
+    di as error "Data file not found: `datafile'"
+    exit 601
+}
+use "`datafile'", clear
+
+capture confirm variable `reference'
+if _rc {
+    di as error "Reference-standard variable not found: `reference'"
+    exit 111
+}
+capture confirm variable `index'
+if _rc {
+    di as error "Index-test variable not found: `index'"
+    exit 111
+}
+
+* Expected binary coding: 0 = negative, 1 = positive
+tab `reference', missing
+tab `index', missing
+assert inlist(`reference',0,1) if !missing(`reference')
+assert inlist(`index',0,1) if !missing(`index')
 
 *======================================================*
-* 2. DEFINE VARIABLES
+* 2. 2x2 TABLE
 *======================================================*
-* reference_standard: 0 = disease negative, 1 = disease positive
-* index_test:          0 = test negative,   1 = test positive
+tab `index' `reference', missing
+
+quietly count if !missing(`reference',`index')
+local N = r(N)
+quietly count if `index'==1 & `reference'==1
+local TP = r(N)
+quietly count if `index'==0 & `reference'==0
+local TN = r(N)
+quietly count if `index'==1 & `reference'==0
+local FP = r(N)
+quietly count if `index'==0 & `reference'==1
+local FN = r(N)
+
+assert `TP' + `TN' + `FP' + `FN' == `N'
+
+di as text ""
+di as text "2x2 diagnostic table"
+di as text "TP=`TP'  TN=`TN'  FP=`FP'  FN=`FN'  N=`N'"
+
+*======================================================*
+* 3. POINT ESTIMATES
+*======================================================*
+local sens = cond((`TP'+`FN')>0, `TP'/(`TP'+`FN'), .)
+local spec = cond((`TN'+`FP')>0, `TN'/(`TN'+`FP'), .)
+local ppv  = cond((`TP'+`FP')>0, `TP'/(`TP'+`FP'), .)
+local npv  = cond((`TN'+`FN')>0, `TN'/(`TN'+`FN'), .)
+local acc  = cond(`N'>0, (`TP'+`TN')/`N', .)
+local plr  = cond((1-`spec')>0, `sens'/(1-`spec'), .)
+local nlr  = cond(`spec'>0, (1-`sens')/`spec', .)
+
+di as result "Sensitivity = " %6.3f `sens'
+di as result "Specificity = " %6.3f `spec'
+di as result "PPV         = " %6.3f `ppv'
+di as result "NPV         = " %6.3f `npv'
+di as result "Accuracy    = " %6.3f `acc'
+di as result "PLR         = " %6.3f `plr'
+di as result "NLR         = " %6.3f `nlr'
+
+*======================================================*
+* 4. VALIDATED CI WORKFLOW
+*======================================================*
+* For publication-grade 95% CIs, use a validated diagnostic
+* package such as diagt after installing it from SSC:
+*     ssc install diagt
+*     diagt `index' `reference'
 *
-* Confirm coding before analysis:
-* tab reference_standard, missing
-* tab index_test, missing
-* tab reference_standard index_test, missing
+* This workflow intentionally does not construct CIs from
+* rounded percentages. Confirm the CI method before reporting.
 
 *======================================================*
-* 3. DIAGNOSTIC ACCURACY
+* 5. OPTIONAL OUTPUT LOG
 *======================================================*
-* Recommended user-written command, if installed:
-* ssc install diagt
-* diagt index_test reference_standard
-
-*======================================================*
-* 4. CORE FORMULAS
-*======================================================*
-* TP = index test + / reference standard +
-* TN = index test - / reference standard -
-* FP = index test + / reference standard -
-* FN = index test - / reference standard +
-*
-* Sensitivity = TP / (TP + FN)
-* Specificity = TN / (TN + FP)
-* PPV         = TP / (TP + FP)
-* NPV         = TN / (TN + FN)
-* Accuracy    = (TP + TN) / N
-* PLR         = Sensitivity / (1 - Specificity)
-* NLR         = (1 - Sensitivity) / Specificity
-
-*======================================================*
-* 5. EXACT CONFIDENCE INTERVALS
-*======================================================*
-* Use a validated diagnostic command/package for exact
-* or binomial confidence intervals rather than manually
-* calculating intervals from rounded percentages.
-
-*======================================================*
-* 6. REPORTING CHECKLIST
-*======================================================*
-* Report 2x2 counts first, followed by:
-* Sensitivity (95% CI)
-* Specificity (95% CI)
-* PPV (95% CI)
-* NPV (95% CI)
-* Accuracy (95% CI)
-* Positive likelihood ratio (95% CI, when available)
-* Negative likelihood ratio (95% CI, when available)
-*
-* State the reference standard and index-test definitions.
-* Do not compare diagnostic tests using overlapping CIs alone.
+capture mkdir "`outdir'"
+capture log close diagnostic_log
+capture log using "`outdir'/diagnostic_accuracy.log", replace text name(diagnostic_log)
+di as text "Diagnostic accuracy analysis"
+di as text "Reference: `reference' | Index: `index' | N=`N'"
+di as text "TP=`TP' TN=`TN' FP=`FP' FN=`FN'"
+di as text "Sensitivity=" %6.3f `sens'
+di as text "Specificity=" %6.3f `spec'
+di as text "PPV=" %6.3f `ppv'
+di as text "NPV=" %6.3f `npv'
+di as text "Accuracy=" %6.3f `acc'
+di as text "PLR=" %6.3f `plr'
+di as text "NLR=" %6.3f `nlr'
+capture log close diagnostic_log
 
 *******************************************************
 * End of file
