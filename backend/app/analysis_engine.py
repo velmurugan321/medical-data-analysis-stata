@@ -17,6 +17,14 @@ def _clean_list(value):
     return list(value or [])
 
 
+def _clopper_pearson(successes, total, alpha=0.05):
+    if total <= 0:
+        return [None, None]
+    lower = 0.0 if successes == 0 else float(stats.beta.ppf(alpha / 2, successes, total - successes + 1))
+    upper = 1.0 if successes == total else float(stats.beta.ppf(1 - alpha / 2, successes + 1, total - successes))
+    return [lower, upper]
+
+
 def descriptive(df, variables):
     variables = _clean_list(variables)
     _require_columns(df, variables)
@@ -58,16 +66,41 @@ def diagnostic_accuracy(df, index_test, reference_standard):
     tn = int(((x[index_test] == 0) & (x[reference_standard] == 0)).sum())
     fp = int(((x[index_test] == 1) & (x[reference_standard] == 0)).sum())
     fn = int(((x[index_test] == 0) & (x[reference_standard] == 1)).sum())
-    sens = tp / (tp + fn) if tp + fn else np.nan
-    spec = tn / (tn + fp) if tn + fp else np.nan
-    ppv = tp / (tp + fp) if tp + fp else np.nan
-    npv = tn / (tn + fn) if tn + fn else np.nan
+    sens_n, spec_n, ppv_n, npv_n = tp + fn, tn + fp, tp + fp, tn + fn
+    sens = tp / sens_n if sens_n else np.nan
+    spec = tn / spec_n if spec_n else np.nan
+    ppv = tp / ppv_n if ppv_n else np.nan
+    npv = tn / npv_n if npv_n else np.nan
     acc = (tp + tn) / len(x) if len(x) else np.nan
     plr = sens / (1 - spec) if np.isfinite(spec) and spec < 1 else np.inf
     nlr = (1 - sens) / spec if np.isfinite(spec) and spec > 0 else np.nan
+    metrics = {
+        "sensitivity": [sens, _clopper_pearson(tp, sens_n)],
+        "specificity": [spec, _clopper_pearson(tn, spec_n)],
+        "ppv": [ppv, _clopper_pearson(tp, ppv_n)],
+        "npv": [npv, _clopper_pearson(tn, npv_n)],
+        "accuracy": [acc, _clopper_pearson(tp + tn, len(x)) if len(x) else [None, None]],
+    }
     return {"n": len(x), "tp": tp, "tn": tn, "fp": fp, "fn": fn,
             "sensitivity": sens, "specificity": spec, "ppv": ppv, "npv": npv,
-            "accuracy": acc, "plr": plr, "nlr": nlr}
+            "accuracy": acc, "plr": plr, "nlr": nlr,
+            "confidence_interval_method": "Exact Clopper-Pearson 95% CI",
+            "metrics_95ci": {k: {"estimate": v[0], "lower": v[1][0], "upper": v[1][1]} for k, v in metrics.items()}}
+
+
+def _roc_bootstrap_ci(y, scores, n_boot=1000, seed=2026):
+    rng = np.random.default_rng(seed)
+    y = np.asarray(y); scores = np.asarray(scores)
+    values = []
+    from sklearn.metrics import roc_auc_score
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(y), len(y))
+        if np.unique(y[idx]).size < 2:
+            continue
+        values.append(roc_auc_score(y[idx], scores[idx]))
+    if len(values) < 100:
+        return [None, None]
+    return [float(np.quantile(values, .025)), float(np.quantile(values, .975))]
 
 
 def roc_auc(df, test, outcome):
@@ -76,9 +109,21 @@ def roc_auc(df, test, outcome):
     if x[outcome].nunique() != 2:
         raise ValueError("ROC outcome must contain exactly two observed classes")
     from sklearn.metrics import roc_auc_score, roc_curve
-    auc = float(roc_auc_score(x[outcome], x[test]))
-    fpr, tpr, thresholds = roc_curve(x[outcome], x[test])
-    return {"n": len(x), "auc": auc, "fpr": fpr.tolist(), "tpr": tpr.tolist(), "thresholds": thresholds.tolist()}
+    y = x[outcome].to_numpy(); scores = x[test].to_numpy(dtype=float)
+    auc = float(roc_auc_score(y, scores))
+    fpr, tpr, thresholds = roc_curve(y, scores)
+    specificity = 1 - fpr
+    youden = tpr + specificity - 1
+    finite = np.isfinite(thresholds)
+    candidate = np.where(finite, youden, -np.inf)
+    best_idx = int(np.argmax(candidate))
+    return {"n": len(x), "auc": auc, "auc_95ci": _roc_bootstrap_ci(y, scores),
+            "fpr": fpr.tolist(), "tpr": tpr.tolist(), "specificity": specificity.tolist(),
+            "thresholds": thresholds.tolist(), "youden_j": youden.tolist(),
+            "optimal_cutoff": None if not np.isfinite(thresholds[best_idx]) else float(thresholds[best_idx]),
+            "optimal_sensitivity": float(tpr[best_idx]), "optimal_specificity": float(specificity[best_idx]),
+            "optimal_youden_j": float(youden[best_idx]),
+            "auc_ci_method": "Percentile bootstrap (1000 resamples, seed 2026)"}
 
 
 def _parse_reference_categories(reference_categories):
@@ -151,13 +196,36 @@ def robust_poisson(df, outcome, predictors, categorical_predictors=None, referen
             "note": "RR is exp(beta). Categorical predictors use the supplied reference category; otherwise the first observed level is used."}
 
 
+def logistic_regression(df, outcome, predictors, categorical_predictors=None, reference_categories=None):
+    predictors = _clean_list(predictors)
+    if not predictors: raise ValueError("At least one predictor is required")
+    categorical_predictors = _clean_list(categorical_predictors); references = _parse_reference_categories(reference_categories)
+    _require_columns(df, [outcome] + predictors)
+    if not set(df[outcome].dropna().unique()).issubset({0, 1}):
+        raise ValueError("Outcome must be coded 0/1 for logistic regression")
+    encoded, metadata = _encode_predictors(df, predictors, categorical_predictors, references)
+    work = pd.concat([df[[outcome]], encoded], axis=1).dropna()
+    y = work[outcome].astype(float)
+    X = sm.add_constant(work.drop(columns=[outcome]).astype(float), has_constant="add")
+    model = sm.Logit(y, X).fit(disp=False)
+    conf = model.conf_int(); by_term = {m["term"]: m for m in metadata}; rows = []
+    for term in model.params.index:
+        if term == "const": continue
+        m = by_term[term]
+        rows.append({"term": term, "variable": m["variable"], "level": m["level"], "reference": m["reference"],
+                     "or": float(np.exp(model.params[term])), "lower_ci": float(np.exp(conf.loc[term, 0])),
+                     "upper_ci": float(np.exp(conf.loc[term, 1])), "p_value": float(model.pvalues[term])})
+    return {"method": "Logistic regression", "outcome": outcome, "n": int(len(work)), "rows": rows,
+            "converged": bool(model.mle_retvals.get("converged", True))}
+
+
 def _continuous_test(groups):
     groups = [g.dropna() for g in groups if len(g.dropna()) > 0]
     if len(groups) < 2: return None, "insufficient groups"
     if len(groups) == 2:
-        stat, p = stats.ttest_ind(groups[0], groups[1], equal_var=False)
+        _, p = stats.ttest_ind(groups[0], groups[1], equal_var=False)
         return float(p), "Welch t-test"
-    stat, p = stats.f_oneway(*groups)
+    _, p = stats.f_oneway(*groups)
     return float(p), "one-way ANOVA"
 
 
@@ -177,7 +245,7 @@ def table_one(df, variables, group=None):
             else:
                 ct = pd.crosstab(df[group], df[col])
                 if ct.shape[0] >= 2 and ct.shape[1] >= 2:
-                    chi2, p, _, expected = stats.chi2_contingency(ct, correction=False)
+                    _, p, _, expected = stats.chi2_contingency(ct, correction=False)
                     if ct.shape == (2, 2) and (expected < 5).any():
                         _, p = stats.fisher_exact(ct.to_numpy()); item["test"] = "Fisher exact"
                     else: item["test"] = "Pearson chi-square"
@@ -193,6 +261,6 @@ def data_quality(df):
         if missing: issues.append("missing")
         if unique <= 1: issues.append("constant_or_empty")
         if unique > max(50, int(len(df) * 0.5)): issues.append("high_cardinality")
-        rows.append({"variable": str(col), "dtype": str(s.dtype), "n": int(len(s)), "missing": missing,
+        rows.append({"variable": str(col), "dtype": str(s.dtype), "n": int(len(df)), "missing": missing,
                      "missing_percent": float(missing / len(df) * 100) if len(df) else 0, "unique": unique, "issues": issues})
     return {"rows": int(len(df)), "columns": int(len(df.columns)), "duplicate_rows": duplicate_rows, "variables": rows}
