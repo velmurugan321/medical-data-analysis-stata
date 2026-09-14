@@ -1,52 +1,110 @@
-import React, { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
-type Module = 'dashboard'|'upload'|'variables'|'quality'|'descriptive'|'association'|'regression'|'diagnostic'|'roc'|'graphs'|'results'
-type Variable = { name:string; type:string; storage_type:string; n:number; missing:number; unique:number; min?:number|null; max?:number|null }
+type Module = 'dashboard' | 'upload' | 'variables' | 'quality' | 'descriptive' | 'association' | 'regression' | 'diagnostic' | 'roc' | 'graphs' | 'results'
+type Info = { rows: number; columns: number; variables: Array<Record<string, unknown>> }
 
-const modules: {id:Module; label:string; icon:string}[] = [
- ['dashboard','Dashboard','▦'],['upload','Data Upload','⇧'],['variables','Variable View','☷'],['quality','Data Quality','✓'],['descriptive','Descriptive','▤'],['association','Association','↔'],['regression','Regression','β'],['diagnostic','Diagnostic','⊞'],['roc','ROC Analysis','⌁'],['graphs','Graphs','◒'],['results','Results & Export','⇩']
-].map(([id,label,icon])=>({id:id as Module,label,icon}))
+const modules: Array<{ id: Module; label: string; icon: string }> = [
+  { id: 'dashboard', label: 'Dashboard', icon: '▦' },
+  { id: 'upload', label: 'Data Upload', icon: '⇧' },
+  { id: 'variables', label: 'Variable View', icon: '☷' },
+  { id: 'quality', label: 'Data Quality', icon: '✓' },
+  { id: 'descriptive', label: 'Descriptive', icon: '▤' },
+  { id: 'association', label: 'Association', icon: '↔' },
+  { id: 'regression', label: 'Regression', icon: 'β' },
+  { id: 'diagnostic', label: 'Diagnostic', icon: '⊞' },
+  { id: 'roc', label: 'ROC Analysis', icon: '⌁' },
+  { id: 'graphs', label: 'Graphs', icon: '◒' },
+  { id: 'results', label: 'Results & Export', icon: '⇩' }
+]
 
-const API_BASE = (window as Window & { MEDICAL_ANALYTICS_API?:string }).MEDICAL_ANALYTICS_API || window.location.origin
+const API = (window as Window & { MEDICAL_ANALYTICS_API?: string }).MEDICAL_ANALYTICS_API || window.location.origin
 
-function App(){
- const [active,setActive]=useState<Module>('dashboard'); const [file,setFile]=useState<File|null>(null); const [info,setInfo]=useState<{rows:number;columns:number;variables:Variable[]}|null>(null); const [quality,setQuality]=useState<any>(null); const [busy,setBusy]=useState(false); const [message,setMessage]=useState('No dataset loaded'); const [result,setResult]=useState<any>(null)
- const [desc,setDesc]=useState(''); const [assoc,setAssoc]=useState({variable:'',outcome:''}); const [diag,setDiag]=useState({test:'',ref:''}); const [roc,setRoc]=useState({test:'',outcome:''})
- const title=modules.find(m=>m.id===active)?.label || 'Dashboard'
- const missing=useMemo(()=>info?.variables.reduce((s,v)=>s+v.missing,0) ?? 0,[info])
- async function upload(f:File){setFile(f);setBusy(true);setMessage('Inspecting dataset…'); try{const d=await post('/api/v1/data/inspect',f);setInfo(d);const q=await post('/api/v1/data/quality',f);setQuality(q.results);setMessage('Dataset loaded and quality checked')}catch(e){setMessage(`API error: ${e instanceof Error?e.message:String(e)}`)}finally{setBusy(false)}}
- async function post(path:string,f=file,fields:Record<string,string>={}){if(!f)throw new Error('Upload a dataset first.');const fd=new FormData();fd.append('file',f);Object.entries(fields).forEach(([k,v])=>fd.append(k,v));const r=await fetch(`${API_BASE}${path}`,{method:'POST',body:fd});const text=await r.text();if(!r.ok)throw new Error(text);return JSON.parse(text)}
- async function run(path:string,fields:Record<string,string>){setBusy(true);try{setResult(await post(path,file!,fields));setActive('results')}catch(e){setResult({error:e instanceof Error?e.message:String(e)})}finally{setBusy(false)}}
- const goUpload=()=>{setActive('upload');document.getElementById('dataset-input')?.click()}
- return <div className="app">
-  <aside className="sidebar"><div className="brand"><div className="brand-mark">M</div><div><strong>Medical Analytics Lab</strong><span>Clinical statistics platform</span></div></div><nav>{modules.map(m=><button key={m.id} className={active===m.id?'active':''} onClick={()=>setActive(m.id)}><i>{m.icon}</i>{m.label}</button>)}</nav><div className="side-footer"><span className="dot"/> Statistical engine connected<br/><small>API: {API_BASE}</small></div></aside>
-  <main className="main"><header><div><span className="eyebrow">Medical statistics</span><h1>{title}</h1><p>Upload once, inspect your data, and run reproducible clinical analyses.</p></div><button className="primary" onClick={goUpload}>+ Upload Dataset</button></header>
-   <input id="dataset-input" hidden type="file" accept=".csv,.xlsx,.xls,.dta,.tsv" onChange={e=>e.target.files?.[0]&&upload(e.target.files[0])}/>
-   {active==='dashboard'&&<Dashboard info={info} missing={missing} message={message} busy={busy} onUpload={goUpload} setActive={setActive}/>} 
-   {active==='upload'&&<Upload onUpload={upload} file={file} busy={busy} message={message}/>} 
-   {active==='variables'&&<Variables info={info}/>} 
-   {active==='quality'&&<Quality quality={quality}/>} 
-   {active==='descriptive'&&<Analysis title="Descriptive Analysis" hint="Enter comma-separated variables." fields={<input value={desc} onChange={e=>setDesc(e.target.value)} placeholder="age, sex, bmi"/>} onRun={()=>run('/api/v1/analysis/descriptive',{variables:desc})} result={result} busy={busy}/>} 
-   {active==='association'&&<Analysis title="Categorical Association" hint="Pearson chi-square / Fisher exact." fields={<><input value={assoc.variable} onChange={e=>setAssoc({...assoc,variable:e.target.value})} placeholder="Predictor"/><input value={assoc.outcome} onChange={e=>setAssoc({...assoc,outcome:e.target.value})} placeholder="Outcome"/></>} onRun={()=>run('/api/v1/analysis/association',assoc)} result={result} busy={busy}/>} 
-   {active==='regression'&&<Analysis title="Robust Poisson Regression" hint="Binary outcome → crude and adjusted RR, 95% CI and p-value." fields={<textarea defaultValue={'{"outcome":"outcome","predictors":["age","sex"],"categorical_predictors":["sex"],"reference_categories":{"sex":"0"}}' id="poisson-config"/>} onRun={()=>run('/api/v1/analysis/poisson',{config:(document.getElementById('poisson-config') as HTMLTextAreaElement).value})} result={result} busy={busy}/>} 
-   {active==='diagnostic'&&<Analysis title="Diagnostic Accuracy" hint="Index test and reference standard must be binary 0/1." fields={<><input value={diag.test} onChange={e=>setDiag({...diag,test:e.target.value})} placeholder="Index test"/><input value={diag.ref} onChange={e=>setDiag({...diag,ref:e.target.value})} placeholder="Reference standard"/></>} onRun={()=>run('/api/v1/analysis/diagnostic',{index_test:diag.test,reference_standard:diag.ref})} result={result} busy={busy}/>} 
-   {active==='roc'&&<Analysis title="ROC Analysis" hint="Continuous test/score against a binary outcome." fields={<><input value={roc.test} onChange={e=>setRoc({...roc,test:e.target.value})} placeholder="Test / score"/><input value={roc.outcome} onChange={e=>setRoc({...roc,outcome:e.target.value})} placeholder="Binary outcome"/></>} onRun={()=>run('/api/v1/analysis/roc',roc)} result={result} busy={busy}/>} 
-   {active==='graphs'&&<Empty title="Graphs" text="The visualization layer will reuse validated analysis results for histogram, boxplot, bar chart, scatter, forest plot and ROC outputs."/>}
-   {active==='results'&&<Results result={result}/>} 
-  </main>
- </div>
+function App() {
+  const [active, setActive] = useState<Module>('dashboard')
+  const [file, setFile] = useState<File | null>(null)
+  const [info, setInfo] = useState<Info | null>(null)
+  const [quality, setQuality] = useState<unknown>(null)
+  const [result, setResult] = useState<unknown>(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('No dataset loaded')
+
+  async function post(path: string, fields: Record<string, string> = {}) {
+    if (!file) throw new Error('Upload a dataset first.')
+    const form = new FormData()
+    form.append('file', file)
+    Object.entries(fields).forEach(([key, value]) => form.append(key, value))
+    const response = await fetch(`${API}${path}`, { method: 'POST', body: form })
+    const text = await response.text()
+    if (!response.ok) throw new Error(text)
+    return JSON.parse(text)
+  }
+
+  async function loadDataset(next: File) {
+    setFile(next)
+    setBusy(true)
+    setMessage('Inspecting dataset...')
+    try {
+      const inspected = await post('/api/v1/data/inspect')
+      setInfo(inspected)
+      const checked = await post('/api/v1/data/quality')
+      setQuality(checked.results)
+      setMessage('Dataset loaded and quality checked')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'API error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runAnalysis(path: string, fields: Record<string, string>) {
+    setBusy(true)
+    try {
+      setResult(await post(path, fields))
+      setActive('results')
+    } catch (error) {
+      setResult({ error: error instanceof Error ? error.message : 'Analysis failed' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const title = modules.find((item) => item.id === active)?.label || 'Dashboard'
+
+  return (
+    <div className="app">
+      <aside className="sidebar">
+        <div className="brand"><div className="brand-mark">M</div><div><strong>Medical Analytics Lab</strong><span>Clinical statistics platform</span></div></div>
+        <nav>{modules.map((item) => <button key={item.id} className={active === item.id ? 'active' : ''} onClick={() => setActive(item.id)}><i>{item.icon}</i>{item.label}</button>)}</nav>
+        <div className="side-footer"><span className="dot" /> Statistical engine connected</div>
+      </aside>
+      <main className="main">
+        <header><div><span className="eyebrow">Medical statistics</span><h1>{title}</h1><p>Upload data, inspect variables, run validated clinical analyses and export results.</p></div><label className="primary">+ Upload Dataset<input hidden type="file" accept=".csv,.xlsx,.xls,.dta,.tsv" onChange={(event) => event.target.files?.[0] && loadDataset(event.target.files[0])} /></label></header>
+        {active === 'dashboard' && <Dashboard info={info} message={message} busy={busy} onUpload={() => setActive('upload')} />}
+        {active === 'upload' && <Upload file={file} busy={busy} message={message} onUpload={loadDataset} />}
+        {active === 'variables' && <Panel title="Variable View">{info ? <pre className="result">{JSON.stringify(info.variables, null, 2)}</pre> : <Empty text="Upload a dataset to inspect variables." />}</Panel>}
+        {active === 'quality' && <Panel title="Data Quality">{quality ? <pre className="result">{JSON.stringify(quality, null, 2)}</pre> : <Empty text="Upload a dataset to run quality checks." />}</Panel>}
+        {active === 'descriptive' && <Analysis title="Descriptive Analysis" fields="variables" onRun={(v) => runAnalysis('/api/v1/analysis/descriptive', { variables: v })} busy={busy} />}
+        {active === 'association' && <Analysis title="Categorical Association" fields="variable,outcome" onRun={(v) => runAnalysis('/api/v1/analysis/association', { variable: v.split(',')[0] || '', outcome: v.split(',')[1] || '' })} busy={busy} />}
+        {active === 'diagnostic' && <Analysis title="Diagnostic Accuracy" fields="index_test,reference_standard" onRun={(v) => runAnalysis('/api/v1/analysis/diagnostic', { index_test: v.split(',')[0] || '', reference_standard: v.split(',')[1] || '' })} busy={busy} />}
+        {active === 'roc' && <Analysis title="ROC Analysis" fields="test,outcome" onRun={(v) => runAnalysis('/api/v1/analysis/roc', { test: v.split(',')[0] || '', outcome: v.split(',')[1] || '' })} busy={busy} />}
+        {active === 'regression' && <Analysis title="Robust Poisson Regression" fields="JSON model configuration" onRun={(v) => runAnalysis('/api/v1/analysis/poisson', { config: v })} busy={busy} />}
+        {active === 'graphs' && <Panel title="Graphs"><Empty text="Validated visualization modules will be connected here." /></Panel>}
+        {active === 'results' && <Panel title="Results & Export"><pre className="result">{result ? JSON.stringify(result, null, 2) : 'No analysis run yet.'}</pre></Panel>}
+      </main>
+    </div>
+  )
 }
 
-function Dashboard({info,missing,message,busy,onUpload,setActive}:{info:any;missing:number;message:string;busy:boolean;onUpload:()=>void;setActive:(m:Module)=>void}){return <><div className="hero-grid"><div className="hero"><span className="badge">{busy?'PROCESSING':'READY'}</span><h2>Clinical analysis, built for reproducibility.</h2><p>From raw dataset to publication-ready statistical results with a consistent workflow.</p><button className="primary" onClick={onUpload}>Upload your dataset</button></div><div className="pipeline"><span>WORKFLOW</span><div>Upload → Inspect → Quality → Analyze → Validate → Export</div><small>{message}</small></div></div><div className="cards"><Card label="Dataset" value={info?'Loaded':'—'}/><Card label="Rows" value={info?.rows?.toLocaleString()||'—'}/><Card label="Variables" value={info?.columns?.toLocaleString()||'—'}/><Card label="Missing cells" value={info?missing.toLocaleString():'—'}/></div><div className="panel"><h3>Analysis modules</h3><div className="module-grid">{['Data Quality','Descriptive','Association','Regression','Diagnostic','ROC Analysis','Graphs','Results & Export'].map((x,i)=><button key={x} onClick={()=>setActive(modules.find(m=>m.label===x)?.id||'dashboard')}><b>{['✓','▤','↔','β','⊞','⌁','◒','⇩'][i]}</b><span>{x}</span><small>Open module →</small></button>)}</div></div></>}
-function Card({label,value}:{label:string;value:string}){return <div className="card"><span>{label}</span><strong>{value}</strong></div>}
-function Upload({onUpload,file,busy,message}:{onUpload:(f:File)=>void;file:File|null;busy:boolean;message:string}){return <div className="panel upload"><h2>Upload Dataset</h2><p>Supported: CSV, XLSX, XLS, Stata DTA and TSV.</p><label className="drop"><b>{busy?'Inspecting…':'Drop your dataset here'}</b><span>or click to browse</span><input type="file" accept=".csv,.xlsx,.xls,.dta,.tsv" onChange={e=>e.target.files?.[0]&&onUpload(e.target.files[0])}/></label>{file&&<div className="file-row"><b>{file.name}</b><span>{(file.size/1024/1024).toFixed(2)} MB</span><em>{message}</em></div>}</div>}
-function Variables({info}:{info:any}){return <div className="panel"><h2>Variable View</h2>{!info?<Empty title="No dataset" text="Upload a dataset to inspect variables."/>:<Table headers={['Variable','Type','Storage','N','Missing','Unique','Min','Max']} rows={info.variables.map((v:Variable)=>[v.name,v.type,v.storage_type,v.n,v.missing,v.unique,v.min??'—',v.max??'—'])}/>}</div>}
-function Quality({quality}:{quality:any}){return <div className="panel"><h2>Data Quality</h2>{!quality?<Empty title="No quality report" text="Upload a dataset to run quality checks."/>:<><div className="quality-summary"><b>{quality.rows}</b> rows <b>{quality.columns}</b> variables <b>{quality.duplicate_rows}</b> duplicate rows</div><Table headers={['Variable','Missing %','Unique','Issues']} rows={quality.variables.map((v:any)=>[v.variable,v.missing_percent.toFixed(2),v.unique,v.issues.length?v.issues.join(', '):'OK'])}/></>}</div>}
-function Analysis({title,hint,fields,onRun,result,busy}:{title:string;hint:string;fields:React.ReactNode;onRun:()=>void;result:any;busy:boolean}){return <div className="panel"><h2>{title}</h2><p className="muted">{hint}</p><div className="controls">{fields}<button className="primary" onClick={onRun} disabled={busy}> {busy?'Running…':'Run Analysis'} </button></div>{result&&<pre className="result">{JSON.stringify(result,null,2)}</pre>}</div>}
-function Results({result}:{result:any}){return <div className="panel"><h2>Results & Export</h2><p className="muted">Latest analysis result. Publication-ready export will be connected in the next phase.</p><pre className="result">{result?JSON.stringify(result,null,2):'No analysis run yet.'}</pre></div>}
-function Empty({title,text}:{title:string;text:string}){return <div className="empty"><b>{title}</b><span>{text}</span></div>}
-function Table({headers,rows}:{headers:string[];rows:any[][]}){return <div className="table-wrap"><table><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={i}>{r.map((c,j)=><td key={j}>{String(c)}</td>)}</tr>)}</tbody></table></div>}
+function Dashboard({ info, message, busy, onUpload }: { info: Info | null; message: string; busy: boolean; onUpload: () => void }) {
+  return <><div className="hero-grid"><div className="hero"><span className="badge">{busy ? 'PROCESSING' : 'READY'}</span><h2>Clinical analysis, built for reproducibility.</h2><p>From raw dataset to publication-ready statistical results.</p><button className="primary" onClick={onUpload}>Upload your dataset</button></div><div className="pipeline"><span>WORKFLOW</span><div>Upload → Inspect → Quality → Analyze → Validate → Export</div><small>{message}</small></div></div><div className="cards"><Card label="Dataset" value={info ? 'Loaded' : '—'} /><Card label="Rows" value={info ? String(info.rows) : '—'} /><Card label="Variables" value={info ? String(info.columns) : '—'} /><Card label="API" value="Connected" /></div></>
+}
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>)
+function Card({ label, value }: { label: string; value: string }) { return <div className="card"><span>{label}</span><strong>{value}</strong></div> }
+function Upload({ file, busy, message, onUpload }: { file: File | null; busy: boolean; message: string; onUpload: (file: File) => void }) { return <Panel title="Upload Dataset"><label className="drop"><b>{busy ? 'Inspecting...' : 'Choose your dataset'}</b><span>CSV, XLSX, XLS, Stata DTA or TSV</span><input type="file" accept=".csv,.xlsx,.xls,.dta,.tsv" onChange={(event) => event.target.files?.[0] && onUpload(event.target.files[0])} /></label>{file && <div className="file-row"><b>{file.name}</b><em>{message}</em></div>}</Panel> }
+function Analysis({ title, fields, onRun, busy }: { title: string; fields: string; onRun: (value: string) => void; busy: boolean }) { const [value, setValue] = useState(''); return <Panel title={title}><p className="muted">Enter {fields}.</p><textarea value={value} onChange={(event) => setValue(event.target.value)} placeholder={fields} /><button className="primary" disabled={busy} onClick={() => onRun(value)}>{busy ? 'Running...' : 'Run Analysis'}</button></Panel> }
+function Panel({ title, children }: { title: string; children: React.ReactNode }) { return <div className="panel"><h2>{title}</h2>{children}</div> }
+function Empty({ text }: { text: string }) { return <div className="empty"><b>No data yet</b><span>{text}</span></div> }
+
+createRoot(document.getElementById('root')!).render(<App />)
