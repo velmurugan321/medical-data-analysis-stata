@@ -1,62 +1,67 @@
 *******************************************************
 * Medical Data Analysis using Stata
 * File: continuous_association.do
-* Purpose: Analysis of continuous variables
+* Purpose: Reproducible continuous-variable analysis
 *******************************************************
 
 clear all
 set more off
 
-*------------------------------------------------------*
-* 1. Load cleaned dataset
-*------------------------------------------------------*
-
+*======================================================*
+* 1. LOAD DATA
+*======================================================*
 * use "data/cleaned_dataset.dta", clear
 
-*------------------------------------------------------*
-* 2. Descriptive statistics
-*------------------------------------------------------*
+*======================================================*
+* 2. DESCRIPTIVE STATISTICS
+*======================================================*
+* summarize age bmi, detail
 
-* summarize age, detail
-* summarize bmi, detail
-
-*------------------------------------------------------*
-* 3. Compare continuous variables between 2 groups
-*------------------------------------------------------*
-
+*======================================================*
+* 3. TWO-GROUP COMPARISON
+*======================================================*
+* Parametric: t test
 * ttest age, by(outcome)
 * ttest bmi, by(outcome)
 
-*------------------------------------------------------*
-* 4. Non-parametric test
-*------------------------------------------------------*
-
-* Mann-Whitney U test
+* Non-parametric: Mann-Whitney/Wilcoxon rank-sum
 * ranksum age, by(outcome)
 * ranksum bmi, by(outcome)
 
-*------------------------------------------------------*
-* 5. Compare across 3 or more groups
-*------------------------------------------------------*
-
+*======================================================*
+* 4. THREE OR MORE GROUPS
+*======================================================*
 * One-way ANOVA
-* oneway age age_group
+* oneway age age_group, tabulate
 
-*------------------------------------------------------*
-* 6. Kruskal-Wallis test
-*------------------------------------------------------*
-
+* Kruskal-Wallis test
 * kwallis bmi, by(age_group)
 
-*------------------------------------------------------*
-* 7. Correlation
-*------------------------------------------------------*
+*======================================================*
+* 5. CORRELATION
+*======================================================*
+* Pearson
+* pwcorr age bmi, sig obs
 
-* Pearson correlation
-* pwcorr age bmi, sig
-
-* Spearman correlation
+* Spearman
 * spearman age bmi
+
+*======================================================*
+* 6. BASIC ASSUMPTION CHECKS
+*======================================================*
+* Histogram / normality assessment
+* histogram age, normal
+* qnorm age
+* swilk age
+
+*======================================================*
+* 7. REPORTING RULE
+*======================================================*
+* Approximately symmetric continuous data: mean (SD)
+* Skewed continuous data: median (IQR)
+* Always report N and missing observations.
+* Do not choose tests solely from p-values; consider
+* distribution, study design and clinical context.
 
 *******************************************************
 * End of file
