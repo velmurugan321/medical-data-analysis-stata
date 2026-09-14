@@ -2,8 +2,7 @@ name: Deploy Medical Analytics Lab
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,12 +19,25 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build React frontend
+        working-directory: frontend
+        run: npm run build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -33,7 +45,7 @@ jobs:
       - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: frontend/dist
 
       - name: Deploy to GitHub Pages
         id: deployment
