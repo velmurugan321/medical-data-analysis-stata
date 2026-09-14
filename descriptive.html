@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Descriptive Analysis - Medical Analytics Lab</title>
+<style>
+body{margin:0;font-family:Arial;background:#f4f7fb;color:#172033}
+header{background:#102a43;color:white;padding:20px}
+main{padding:20px;max-width:900px;margin:auto}
+.box{background:white;padding:20px;margin-top:20px;border-radius:12px;box-shadow:0 3px 12px #0002}
+button{background:#1261a0;color:white;border:0;padding:12px 18px;border-radius:8px}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left}
+</style>
+</head>
+<body>
+
+<header>
+<h1>Descriptive Analysis</h1>
+<p>Medical Analytics Lab</p>
+</header>
+
+<main>
+<div class="box">
+<h2>Upload Dataset</h2>
+<input type="file" id="file" accept=".csv">
+<p id="status">Please upload a CSV file.</p>
+</div>
+
+<div class="box">
+<h2>Analysis Result</h2>
+<div id="result">No data loaded.</div>
+</div>
+</main>
+
+<script>
+document.getElementById("file").onchange=function(e){
+let f=e.target.files[0];
+if(!f)return;
+let r=new FileReader();
+r.onload=function(){
+let rows=r.result.trim().split(/\r?\n/);
+let head=rows[0].split(",");
+document.getElementById("status").innerText=
+"Dataset loaded: "+(rows.length-1)+" records";
+
+let html="<table><tr><th>Variable</th><th>Type</th></tr>";
+head.forEach(function(x){
+html+="<tr><td>"+x+"</td><td>Detected</td></tr>";
+});
+html+="</table>";
+document.getElementById("result").innerHTML=html;
+};
+r.readAsText(f);
+};
+</script>
+
+</body>
+</html>
