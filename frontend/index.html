@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Medical Data Analysis</title>
+  <style>
+    body{margin:0;font-family:Inter,system-ui,-apple-system,sans-serif;background:#f6f8fb;color:#172033}
+    .app{display:flex;min-height:100vh}.side{width:250px;background:#111827;color:#fff;padding:24px;box-sizing:border-box}.side h1{font-size:20px;margin:0 0 28px}.side button{display:block;width:100%;text-align:left;background:none;border:0;color:#cbd5e1;padding:12px;border-radius:8px;margin:3px 0;cursor:pointer}.side button.active,.side button:hover{background:#243047;color:#fff}.main{flex:1;padding:32px}.top{display:flex;justify-content:space-between;align-items:center}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:24px 0}.card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:20px}.card b{font-size:25px}.panel{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:24px;margin-top:18px}.upload{border:2px dashed #cbd5e1;border-radius:12px;padding:35px;text-align:center;background:#fafcff}@media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.side{width:210px}}
+  </style>
+</head>
+<body>
+<div class="app">
+<aside class="side"><h1>Medical Analytics</h1>
+<button class="active">Dashboard</button><button>Data Upload</button><button>Variable View</button><button>Data Quality</button><button>Descriptive</button><button>Association</button><button>Regression</button><button>Diagnostic</button><button>ROC Analysis</button><button>Graphs</button><button>Results & Export</button>
+</aside>
+<main class="main"><div class="top"><div><h2>Analysis Dashboard</h2><p>Clinical and epidemiological statistical analysis</p></div><button id="uploadBtn">Upload Dataset</button></div>
+<div class="cards"><div class="card">Dataset<br><b id="dataset">—</b></div><div class="card">Rows<br><b id="rows">—</b></div><div class="card">Variables<br><b id="vars">—</b></div><div class="card">Missing<br><b id="missing">—</b></div></div>
+<div class="panel"><h3>Start a new analysis</h3><div class="upload">Upload CSV, Excel, Stata (.dta) or TSV dataset<br><small>Statistical calculations are performed by the backend analysis engine.</small><br><br><input id="file" type="file" accept=".csv,.xlsx,.xls,.dta,.tsv" /></div></div>
+<div class="panel"><h3>Analysis pipeline</h3><p>Upload → Inspect variables → Validate data → Select analysis → Run model → Review results → Export tables/graphs</p></div>
+</main></div>
+<script>
+const input=document.getElementById('file');
+input.addEventListener('change',async()=>{const f=input.files[0];if(!f)return;document.getElementById('dataset').textContent=f.name;const fd=new FormData();fd.append('file',f);try{const r=await fetch('/api/v1/data/inspect',{method:'POST',body:fd});if(!r.ok)throw new Error('API unavailable');const d=await r.json();document.getElementById('rows').textContent=d.rows;document.getElementById('vars').textContent=d.columns;document.getElementById('missing').textContent=d.variables.reduce((a,v)=>a+v.missing,0)}catch(e){document.getElementById('rows').textContent='API';document.getElementById('vars').textContent='Ready';document.getElementById('missing').textContent='—'}});
+</script>
+</body></html>
