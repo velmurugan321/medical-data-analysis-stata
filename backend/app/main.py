@@ -1,11 +1,23 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import io
 import pandas as pd
-from .analysis_engine import descriptive, categorical_association, diagnostic_accuracy, roc_auc
+from .analysis_engine import (
+    descriptive, categorical_association, diagnostic_accuracy, roc_auc,
+    robust_poisson, table_one, data_quality,
+)
 
-app = FastAPI(title="Medical Data Analysis API", version="0.2.0")
+app = FastAPI(title="Medical Data Analysis API", version="0.3.0")
 ALLOWED_SUFFIXES = {".csv", ".xlsx", ".xls", ".dta", ".tsv"}
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def load_dataframe(filename: str, content: bytes) -> pd.DataFrame:
@@ -25,7 +37,8 @@ def load_dataframe(filename: str, content: bytes) -> pd.DataFrame:
 def variable_metadata(df):
     rows = []
     for col in df.columns:
-        s = df[col]; numeric = pd.api.types.is_numeric_dtype(s)
+        s = df[col]
+        numeric = pd.api.types.is_numeric_dtype(s)
         rows.append({"name": str(col), "type": "numeric" if numeric else "categorical",
                      "storage_type": str(s.dtype), "n": int(s.notna().sum()),
                      "missing": int(s.isna().sum()), "unique": int(s.nunique(dropna=True)),
@@ -36,7 +49,7 @@ def variable_metadata(df):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "medical-data-analysis-api"}
+    return {"status": "ok", "service": "medical-data-analysis-api", "version": app.version}
 
 
 @app.post("/api/v1/data/inspect")
@@ -47,48 +60,79 @@ async def inspect_data(file: UploadFile = File(...)):
 
 
 class DatasetAnalysisRequest(BaseModel):
-    dataset: str
+    dataset: str = "upload"
     variables: list[str] = Field(default_factory=list)
 
-class AssociationRequest(DatasetAnalysisRequest):
-    variable: str
-    outcome: str
 
-class DiagnosticRequest(DatasetAnalysisRequest):
-    index_test: str
-    reference_standard: str
+class PoissonRequest(DatasetAnalysisRequest):
+    outcome: str
+    predictors: list[str] = Field(default_factory=list)
+    categorical_predictors: list[str] = Field(default_factory=list)
+    reference_categories: dict[str, str] = Field(default_factory=dict)
 
 
 @app.post("/api/v1/analysis/descriptive")
 async def descriptive_endpoint(file: UploadFile = File(...), variables: str = ""):
     df = load_dataframe(file.filename or "upload.csv", await file.read())
     selected = [x.strip() for x in variables.split(",") if x.strip()] or list(df.columns)
-    try: return {"method": "descriptive", "results": descriptive(df, selected)}
-    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+    try:
+        return {"method": "descriptive", "results": descriptive(df, selected)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/v1/analysis/association")
 async def association_endpoint(file: UploadFile = File(...), variable: str = "", outcome: str = ""):
     df = load_dataframe(file.filename or "upload.csv", await file.read())
-    try: return {"method": "chi_square_fisher", "results": categorical_association(df, variable, outcome)}
-    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+    try:
+        return {"method": "chi_square_fisher", "results": categorical_association(df, variable, outcome)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/v1/analysis/diagnostic")
 async def diagnostic_endpoint(file: UploadFile = File(...), index_test: str = "", reference_standard: str = ""):
     df = load_dataframe(file.filename or "upload.csv", await file.read())
-    try: return {"method": "diagnostic_accuracy", "results": diagnostic_accuracy(df, index_test, reference_standard)}
-    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+    try:
+        return {"method": "diagnostic_accuracy", "results": diagnostic_accuracy(df, index_test, reference_standard)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/v1/analysis/roc")
 async def roc_endpoint(file: UploadFile = File(...), test: str = "", outcome: str = ""):
     df = load_dataframe(file.filename or "upload.csv", await file.read())
-    try: return {"method": "roc_auc", "results": roc_auc(df, test, outcome)}
-    except ValueError as exc: raise HTTPException(422, str(exc)) from exc
+    try:
+        return {"method": "roc_auc", "results": roc_auc(df, test, outcome)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/v1/analysis/poisson")
-def poisson_placeholder(request: DatasetAnalysisRequest):
-    return {"status": "planned", "method": "robust_poisson_rr",
-            "message": "Use the Stata robust-Poisson workflow until the Python model validation layer is completed."}
+async def poisson_endpoint(file: UploadFile = File(...), request: PoissonRequest = None):
+    if request is None:
+        raise HTTPException(422, "Analysis configuration is required")
+    df = load_dataframe(file.filename or "upload.csv", await file.read())
+    try:
+        return {"method": "robust_poisson_rr", "results": robust_poisson(
+            df, request.outcome, request.predictors,
+            request.categorical_predictors, request.reference_categories
+        )}
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/v1/analysis/table-one")
+async def table_one_endpoint(file: UploadFile = File(...), variables: str = "", group: str = ""):
+    df = load_dataframe(file.filename or "upload.csv", await file.read())
+    selected = [x.strip() for x in variables.split(",") if x.strip()] or list(df.columns)
+    try:
+        return {"method": "table_one", "results": table_one(df, selected, group.strip() or None)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/v1/data/quality")
+async def quality_endpoint(file: UploadFile = File(...)):
+    df = load_dataframe(file.filename or "upload.csv", await file.read())
+    return {"method": "data_quality", "results": data_quality(df)}
