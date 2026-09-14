@@ -53,6 +53,8 @@ let data=rows.slice(1).map(x=>x.split(","));
 document.getElementById("status").innerText=
 "Dataset loaded: "+data.length+" records";
 
+document.getElementById("runBtn").style.display="block";
+
 let html="<table><tr><th>Variable</th><th>N</th><th>Mean</th><th>SD</th><th>Median</th><th>Min</th><th>Max</th></tr>";
 
 head.forEach(function(name,j){
