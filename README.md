@@ -1,121 +1,92 @@
-## Analysis Workflow
+# Medical Data Analysis — Stata
 
-The recommended workflow for a new medical research dataset is:
+A reproducible medical research analysis framework for Stata. The repository is organised from **data management → descriptive analysis → association → regression → diagnostic analysis → visualisation → outputs**.
 
-### Step 1 — Data Management
+## What this repository provides
 
-- Import the dataset
-- Check observations and variables
-- Check duplicates
-- Assess missing data
-- Identify invalid values
+- Reusable Stata `.do` files for common medical research analyses
+- Explicit data-quality and variable-coding checks
+- Descriptive and comparative statistical workflows
+- Robust Poisson regression for risk ratios where appropriate
+- Diagnostic accuracy and ROC/AUC workflows
+- Reproducible visualisation and output export
+- A project template for starting new studies
 
-Script:
+> **Important:** Statistical method selection must follow the study design, outcome type, sampling strategy and analysis plan. The scripts are templates and should be reviewed before publication.
 
-`01_Data_Management/`
+## Repository workflow
 
-### Step 2 — Variable Creation
+```text
+01_Data_Management
+        ↓
+02_Descriptive_Analysis
+        ↓
+03_Association_Analysis
+        ↓
+04_Regression
+        ↓
+05_Diagnostic_Analysis
+        ↓
+06_Visualization
+        ↓
+07_Output
+```
 
-Create and verify required analysis variables.
+### 01 — Data Management
 
-Examples:
+Data inspection, missingness, cleaning and derived-variable creation.
 
-- Age categories
-- BMI categories
-- Exposure variables
-- Outcome variables
+### 02 — Descriptive Analysis
 
-### Step 3 — Descriptive Analysis
+Frequency/percentage for categorical variables and mean/SD or median/IQR for continuous variables.
 
-Describe the study population using:
+### 03 — Association Analysis
 
-- Frequency
-- Percentage
-- Mean
-- Standard deviation
-- Median
-- Interquartile range
+Chi-square, Fisher's exact, t-test, ANOVA, Mann–Whitney and Kruskal–Wallis as appropriate.
 
-Scripts:
+### 04 — Regression
 
-`02_Descriptive_Analysis/`
+Crude and adjusted risk ratios using Poisson regression with robust variance when appropriate. Reference categories must always be explicitly verified.
 
-### Step 4 — Association Analysis
+### 05 — Diagnostic Analysis
 
-Assess relationships between exposure and outcome variables.
+Sensitivity, specificity, PPV, NPV, positive/negative likelihood ratios, accuracy, ROC curve and AUC.
 
-Methods may include:
+### 06 — Visualization
 
-- Chi-square test
-- Fisher's exact test
-- t-test
-- Mann-Whitney U test
-- ANOVA
-- Kruskal-Wallis test
+Study-appropriate graphs, diagnostic plots and publication-oriented figures.
 
-Scripts:
+### 07 — Output
 
-`03_Association_Analysis/`
+Final tables, figures and exported analysis results.
 
-### Step 5 — Regression Analysis
+## Data protection
 
-Depending on the study design and outcome:
+Do **not** commit patient-level, identifiable, confidential or restricted medical data to this public repository. Keep raw datasets outside GitHub and commit only de-identified examples, analysis code and documentation.
 
-- Crude Risk Ratio
-- Adjusted Risk Ratio
-- Poisson regression with robust variance
+## Quality-control checklist
 
-Scripts:
+Before accepting a result:
 
-`04_Regression/`
-
-### Step 6 — Diagnostic Analysis
-
-For diagnostic studies:
-
-- Sensitivity
-- Specificity
-- PPV
-- NPV
-- PLR
-- NLR
-- Accuracy
-- ROC curve
-- AUC
-
-Scripts:
-
-`05_Diagnostic_Analysis/`
-
-### Step 7 — Visualization
-
-Prepare appropriate figures and graphs.
-
-Scripts:
-
-`06_Visualization/`
-
-### Step 8 — Final Outputs
-
-Store final tables, figures, and analysis documentation in:
-
-`07_Output/`
-
-## Quality Control
-
-Before reporting results:
-
-1. Verify the analysis dataset.
-2. Check sample size.
-3. Check missing data.
-4. Verify variable coding.
+1. Confirm the dataset and analysis population.
+2. Check observations, variables and duplicates.
+3. Review missing and impossible values.
+4. Verify variable coding and labels.
 5. Verify reference categories.
-6. Check statistical calculations.
-7. Cross-check tables and figures.
-8. Review all results before publication.
+6. Match the statistical method to the study design.
+7. Check confidence intervals and p-values.
+8. Compare output with an independent calculation or Stata command where feasible.
+9. Review tables/figures against the analysis dataset.
+10. Document exclusions, assumptions and sensitivity analyses.
 
-## Data Protection
+## Project template
 
-This repository is intended for analysis code and documentation.
+`PROJECT_TEMPLATE/` contains a clean structure for new studies. Copy the template into a separate project rather than putting patient data into this repository.
 
-Patient-level or confidential medical data must remain outside the public repository.
+## Current scope
+
+This repository is the **Stata analysis engine and reproducibility layer**. A future web interface can sit on top of these validated workflows, but browser-side summaries should not be presented as publication-grade statistical inference without validation against Stata/R.
+
+## Licence
+
+See `LICENSE`.
