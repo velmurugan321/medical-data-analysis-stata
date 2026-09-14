@@ -1,72 +1,72 @@
 *******************************************************
 * Medical Data Analysis using Stata
 * File: data_cleaning.do
-* Purpose: Basic data cleaning and quality checks
+* Purpose: Reproducible data-quality checks
 *******************************************************
 
+version 15.0
 clear all
 set more off
+set varabbrev off
 
 *------------------------------------------------------*
-* 1. Load dataset
+* 1. Load data
 *------------------------------------------------------*
-
-* Replace with your actual dataset path
-* use "data/your_dataset.dta", clear
+* Replace with the actual project-specific path.
+* use "data/raw_dataset.dta", clear
 
 *------------------------------------------------------*
-* 2. Inspect dataset
+* 2. First-pass dataset audit
 *------------------------------------------------------*
-
 describe
+count
 codebook
 
-*------------------------------------------------------*
-* 3. Check number of observations
-*------------------------------------------------------*
-
-count
-
-*------------------------------------------------------*
-* 4. Check duplicate patient IDs
-*------------------------------------------------------*
-
-* Replace patient_id with your actual ID variable
-* duplicates report patient_id
-* duplicates list patient_id
-
-*------------------------------------------------------*
-* 5. Check missing values
-*------------------------------------------------------*
-
+* Variable-level missingness
 misstable summarize
 
 *------------------------------------------------------*
-* 6. Check categorical variables
+* 3. Duplicate check
 *------------------------------------------------------*
+* Replace patient_id with the unique study identifier.
+* isid patient_id
+* duplicates report patient_id
+* duplicates tag patient_id, gen(dup_id)
 
+*------------------------------------------------------*
+* 4. Categorical-variable checks
+*------------------------------------------------------*
+* Review distributions and missing categories.
 * tab sex, missing
 * tab outcome, missing
-* tab age_group, missing
+* tab exposure, missing
 
 *------------------------------------------------------*
-* 7. Check continuous variables
+* 5. Continuous-variable checks
 *------------------------------------------------------*
-
-* summarize age, detail
-* summarize bmi, detail
-
-*------------------------------------------------------*
-* 8. Check impossible or unusual values
-*------------------------------------------------------*
-
-* assert age >= 0 & age <= 120
-* assert bmi > 0 & bmi < 80
+* summarize age bmi, detail
+* histogram age, normal
+* histogram bmi, normal
 
 *------------------------------------------------------*
-* 9. Save cleaned dataset
+* 6. Range / plausibility checks
 *------------------------------------------------------*
+* Uncomment and adapt to the study protocol.
+* assert inrange(age,0,120) if !missing(age)
+* assert bmi > 0 & bmi < 80 if !missing(bmi)
 
+*------------------------------------------------------*
+* 7. Explicit missing-value handling
+*------------------------------------------------------*
+* Never silently convert special codes into valid observations.
+* Example:
+* replace age = . if age==999
+* label define yesno 0 "No" 1 "Yes", replace
+* label values exposure yesno
+
+*------------------------------------------------------*
+* 8. Save cleaned dataset
+*------------------------------------------------------*
 * save "data/cleaned_dataset.dta", replace
 
 *******************************************************
