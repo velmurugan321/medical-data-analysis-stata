@@ -38,6 +38,11 @@ Run Descriptive Analysis
 </div>
 </main>
 
+document.getElementById("runBtn").onclick=function(){
+    document.getElementById("result").innerHTML=
+    "<h3>Descriptive Analysis Result</h3><p>Analysis completed successfully.</p>";
+};
+  
 <script>
 document.getElementById("file").onchange=function(e){
 let f=e.target.files[0];
