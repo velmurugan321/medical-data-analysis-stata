@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 from .analysis_engine import (
     descriptive, categorical_association, diagnostic_accuracy, roc_auc,
-    robust_poisson, table_one, data_quality,
+    robust_poisson, logistic_regression, table_one, data_quality,
 )
 
-app = FastAPI(title="Medical Data Analysis API", version="0.3.2")
+app = FastAPI(title="Medical Data Analysis API", version="0.4.0")
 ALLOWED_SUFFIXES = {".csv", ".xlsx", ".xls", ".dta", ".tsv"}
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
@@ -95,6 +95,21 @@ async def poisson_endpoint(file: UploadFile = File(...), config: str = Form(...)
     except KeyError as exc:
         raise HTTPException(422, f"Missing Poisson configuration field: {exc.args[0]}") from exc
     except (ValueError, np.linalg.LinAlgError, json.JSONDecodeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/v1/analysis/logistic")
+async def logistic_endpoint(file: UploadFile = File(...), config: str = Form(...)):
+    try:
+        cfg = json.loads(config)
+        df = load_dataframe(file.filename or "upload.csv", await file.read())
+        return {"method": "logistic_regression", "results": logistic_regression(
+            df, cfg["outcome"], cfg.get("predictors", []),
+            cfg.get("categorical_predictors", []), cfg.get("reference_categories", {})
+        )}
+    except KeyError as exc:
+        raise HTTPException(422, f"Missing logistic configuration field: {exc.args[0]}") from exc
+    except (ValueError, np.linalg.LinAlgError, np.linalg.LinAlgError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
