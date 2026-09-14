@@ -9,7 +9,7 @@ from .analysis_engine import (
     robust_poisson, table_one, data_quality,
 )
 
-app = FastAPI(title="Medical Data Analysis API", version="0.3.1")
+app = FastAPI(title="Medical Data Analysis API", version="0.3.2")
 ALLOWED_SUFFIXES = {".csv", ".xlsx", ".xls", ".dta", ".tsv"}
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
