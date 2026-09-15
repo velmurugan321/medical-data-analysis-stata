@@ -4,6 +4,7 @@ import io, json
 import numpy as np
 import pandas as pd
 from fastapi.responses import StreamingResponse
+from docx import Document
 from .analysis_engine import descriptive, categorical_association, diagnostic_accuracy, roc_auc, robust_poisson, logistic_regression, table_one, data_quality
 from .openeepi_engine import screening as openeepi_screening, calculate as openeepi_calculate
 from .dummy_table_engine import analyse_dummy_table
@@ -11,18 +12,34 @@ from .dummy_table_parser import build_spec
 from .dummy_table_fill import fill_dummy_table
 from .rr_analysis import crude_rr, adjusted_rr, format_rr
 
-app = FastAPI(title='Medical Data Analysis API', version='1.1.0')
-ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv'}
+app = FastAPI(title='Medical Data Analysis API', version='1.2.0')
+ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv','.docx'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 
 def load_dataframe(filename,content):
     name=filename.lower(); suffix=next((s for s in ALLOWED_SUFFIXES if name.endswith(s)),None)
-    if suffix is None: raise HTTPException(400,'Unsupported file type. Use CSV, XLSX, XLS, DTA or TSV.')
+    if suffix is None: raise HTTPException(400,'Unsupported file type. Use CSV, XLSX, XLS, DTA, TSV or DOCX.')
     try:
         if suffix=='.csv': return pd.read_csv(io.BytesIO(content))
         if suffix=='.tsv': return pd.read_csv(io.BytesIO(content),sep='\t')
         if suffix in {'.xlsx','.xls'}: return pd.read_excel(io.BytesIO(content))
-        return pd.read_stata(io.BytesIO(content))
+        if suffix=='.dta': return pd.read_stata(io.BytesIO(content))
+        if suffix=='.docx':
+            doc=Document(io.BytesIO(content))
+            if not doc.tables: raise ValueError('DOCX contains no tables. Upload a DOCX with a structured data table.')
+            tables=[]
+            for table in doc.tables:
+                rows=[[cell.text.strip() for cell in row.cells] for row in table.rows]
+                if rows: tables.append(rows)
+            if not tables: raise ValueError('DOCX contains no readable table rows.')
+            # Prefer the largest table because it is most likely the data table.
+            rows=max(tables,key=lambda x: len(x)*max(len(r) for r in x))
+            width=max(len(r) for r in rows)
+            rows=[r+['']*(width-len(r)) for r in rows]
+            header=rows[0]
+            if len(set(header)) != len(header): header=[f'V{i+1}' for i in range(width)]
+            return pd.DataFrame(rows[1:],columns=header)
+    except HTTPException: raise
     except Exception as exc: raise HTTPException(422,f'Unable to read dataset: {exc}') from exc
 
 def variable_metadata(df):
@@ -38,6 +55,22 @@ def health(): return {'status':'ok','service':'medical-data-analysis-api','versi
 @app.post('/api/v1/data/inspect')
 async def inspect_data(file:UploadFile=File(...)):
     df=load_dataframe(file.filename or 'upload.csv',await file.read()); return {'filename':file.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'variables':variable_metadata(df)}
+
+@app.post('/api/v1/data/document')
+async def inspect_document(file:UploadFile=File(...)):
+    name=file.filename or 'document.docx'
+    content=await file.read()
+    if not name.lower().endswith('.docx'):
+        raise HTTPException(400,'Document extraction currently supports DOCX. DOC/PDF/RTF remain reference uploads.')
+    try:
+        doc=Document(io.BytesIO(content))
+        paragraphs=[p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        tables=[]
+        for i,table in enumerate(doc.tables,1):
+            rows=[[cell.text.strip() for cell in row.cells] for row in table.rows]
+            if rows: tables.append({'table_number':i,'rows':rows,'row_count':len(rows),'column_count':max(len(r) for r in rows)})
+        return {'filename':name,'paragraphs':paragraphs,'tables':tables,'table_count':len(tables),'message':'DOCX tables are available for review and structured-table analysis.'}
+    except Exception as exc: raise HTTPException(422,f'Unable to read DOCX: {exc}') from exc
 
 @app.post('/api/v1/analysis/descriptive')
 async def descriptive_endpoint(file:UploadFile=File(...),variables:str=''):
@@ -81,13 +114,7 @@ async def dummy_table_template_endpoint(dataset:UploadFile=File(...), dummy_tabl
     except Exception as exc: raise HTTPException(422,f'Unable to parse dummy table: {exc}') from exc
 
 @app.post('/api/v1/dummy-table/fill')
-async def dummy_table_fill_endpoint(
-    dataset:list[UploadFile]=File(...),
-    dummy_table:UploadFile=File(...),
-    outcome:str=Form(''),
-    outcome_positive:str=Form(''),
-    adjustment_variables:str=Form(''),
-):
+async def dummy_table_fill_endpoint(dataset:list[UploadFile]=File(...),dummy_table:UploadFile=File(...),outcome:str=Form(''),outcome_positive:str=Form(''),adjustment_variables:str=Form('')):
     try:
         dataset_bytes=[]; dataset_names=[]
         for upload in dataset:
@@ -95,24 +122,18 @@ async def dummy_table_fill_endpoint(
         dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'
         positive=[x.strip() for x in outcome_positive.split(',') if x.strip()] or None
         adjustments=[x.strip() for x in adjustment_variables.split(',') if x.strip()] or None
-        output,meta=fill_dummy_table(
-            dataset_bytes,dataset_names,dummy_bytes,dummy_name,
-            outcome=outcome.strip() or None,
-            outcome_positive=positive,
-            adjustment_variables=adjustments,
-        )
+        output,meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name,outcome=outcome.strip() or None,outcome_positive=positive,adjustment_variables=adjustments)
         base=dummy_name.rsplit('.',1)[0]
         return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     except Exception as exc: raise HTTPException(500,f'Unable to fill dummy table: {exc}') from exc
 
 @app.post('/api/v1/analysis/rr-dummy')
-async def rr_dummy_endpoint(file:UploadFile=File(...), config:str=Form(...)):
+async def rr_dummy_endpoint(file:UploadFile=File(...),config:str=Form(...)):
     try:
         cfg=json.loads(config); df=load_dataframe(file.filename or 'upload.csv',await file.read())
         outcome_col=cfg['outcome']; exposure_col=cfg['exposure']; covariates=cfg.get('covariates',[])
-        if outcome_col not in df.columns or exposure_col not in df.columns:
-            raise HTTPException(422,'Outcome or exposure variable was not found in dataset')
+        if outcome_col not in df.columns or exposure_col not in df.columns: raise HTTPException(422,'Outcome or exposure variable was not found in dataset')
         y=_binary(df[outcome_col],cfg.get('outcome_positive',[1,'1','yes','positive','unfavourable','no adherence']))
         e=_binary(df[exposure_col],cfg.get('exposure_positive',[1,'1','intervention','case']))
         crude=crude_rr(y,e)
