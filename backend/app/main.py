@@ -12,8 +12,9 @@ from .dummy_table_parser import build_spec
 from .dummy_table_fill import fill_dummy_table
 from .rr_analysis import crude_rr, adjusted_rr, format_rr, _binary
 from .progress_jobs import router as progress_router
+from .data_intelligence import profile_workbook, profile_multiple_workbooks
 
-app = FastAPI(title='Medical Data Analysis API', version='1.3.0')
+app = FastAPI(title='Medical Data Analysis API', version='1.4.0')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv','.docx'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 app.include_router(progress_router)
@@ -53,7 +54,35 @@ def health(): return {'status':'ok','service':'medical-data-analysis-api','versi
 
 @app.post('/api/v1/data/inspect')
 async def inspect_data(file:UploadFile=File(...)):
-    df=load_dataframe(file.filename or 'upload.csv',await file.read()); return {'filename':file.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'variables':variable_metadata(df)}
+    content=await file.read(); df=load_dataframe(file.filename or 'upload.csv',content); return {'filename':file.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'variables':variable_metadata(df)}
+
+@app.post('/api/v1/data/inspect-workbooks')
+async def inspect_workbooks(files:list[UploadFile]=File(...)):
+    if not files: raise HTTPException(400,'Upload at least one dataset file')
+    if len(files)>10: raise HTTPException(400,'A maximum of 10 dataset files can be inspected at once')
+    payload=[]
+    for upload in files:
+        name=upload.filename or 'upload.xlsx'; content=await upload.read()
+        if name.lower().endswith(('.xlsx','.xls')):
+            payload.append((name,content))
+        else:
+            df=load_dataframe(name,content)
+            from .data_intelligence import profile_variable
+            payload.append((name,content))
+    try:
+        # Excel files are profiled sheet-by-sheet; non-Excel files remain supported as one table.
+        results=[]
+        for name,content in payload:
+            if name.lower().endswith(('.xlsx','.xls')):
+                results.append(profile_workbook(content,name))
+            else:
+                df=load_dataframe(name,content)
+                from .data_intelligence import profile_variable
+                variables=[profile_variable(df,c) for c in df.columns]
+                results.append({'filename':name,'sheet_count':1,'sheets':[{'sheet':'Data','status':'read','rows':int(df.shape[0]),'columns':int(df.shape[1]),'variables':variables}],'variables':[{**v,'sheet':'Data'} for v in variables]})
+        return {'file_count':len(results),'files':results}
+    except Exception as exc:
+        raise HTTPException(422,f'Unable to profile uploaded workbooks: {exc}') from exc
 
 @app.post('/api/v1/data/document')
 async def inspect_document(file:UploadFile=File(...)):
