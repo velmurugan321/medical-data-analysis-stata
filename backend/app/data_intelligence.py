@@ -1,17 +1,12 @@
-"""Conservative workbook-wide data profiling and variable type inference.
-
-The engine never silently recodes data. It reports observed types, coding candidates,
-quality signals and confidence so downstream statistical analysis can require confirmation
-when a variable is ambiguous.
-"""
+"""Conservative workbook-wide data profiling and variable type inference."""
 import io
 import re
 from typing import Any
-import numpy as np
 import pandas as pd
 
 ID_RE = re.compile(r"(^|_)(id|identifier|record|mrn|uhid|uid|patient|participant|serial|sl|code)(_|$)")
 DATE_RE = re.compile(r"date|dob|birth|admission|discharge|visit", re.I)
+ALLOWED_TYPES = {"numeric", "binary", "categorical", "date/time", "identifier", "text"}
 
 
 def norm(x: Any) -> str:
@@ -32,7 +27,7 @@ def _value_family(s: pd.Series):
     if vals.empty:
         return "empty"
     text = vals.astype(str).str.strip()
-    numeric, numeric_rate = _numeric_conversion(vals)
+    _, numeric_rate = _numeric_conversion(vals)
     if numeric_rate >= 0.98:
         return "numeric"
     if text.str.match(r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$").mean() >= 0.8:
@@ -71,7 +66,6 @@ def profile_variable(df: pd.DataFrame, col: str):
     unique = int(s.nunique(dropna=True))
     examples = [str(x) for x in s.dropna().head(8).tolist()]
     warnings = []
-
     if numeric_rate >= 0.80 and numeric_rate < 0.98:
         warnings.append("Mixed numeric/text values; numeric conversion is incomplete")
     if family == "short-code" and unique > 10:
@@ -92,7 +86,6 @@ def profile_variable(df: pd.DataFrame, col: str):
         detected, confidence = "date/time", 0.88
     else:
         detected, confidence = "categorical/text", min(0.95, 0.70 + 0.20 * (unique <= 30))
-
     if warnings:
         confidence = min(confidence, 0.75)
     recommended = {
@@ -104,7 +97,6 @@ def profile_variable(df: pd.DataFrame, col: str):
         "date/time": "date/time analysis or derive duration",
         "empty": "exclude until populated",
     }.get(detected, "manual review")
-
     return {
         "name": str(col), "detected_type": detected, "raw_dtype": str(s.dtype),
         "n": n, "nonmissing": nonmissing, "missing": missing,
@@ -150,3 +142,28 @@ def profile_workbook(content: bytes, filename: str):
 def profile_multiple_workbooks(files):
     workbooks = [profile_workbook(content, name) for name, content in files]
     return {"file_count": len(workbooks), "files": workbooks}
+
+
+def validate_variable_confirmations(confirmations):
+    """Create a validated variable contract; no silent recoding is performed."""
+    if not isinstance(confirmations, list) or not confirmations:
+        raise ValueError("At least one variable confirmation is required")
+    normalized, blocked = [], []
+    for item in confirmations:
+        if not isinstance(item, dict):
+            raise ValueError("Each confirmation must be an object")
+        name = str(item.get("name", "")).strip()
+        sheet = str(item.get("sheet", "")).strip()
+        file_name = str(item.get("file", "")).strip()
+        chosen = str(item.get("confirmed_type", "")).strip().lower()
+        if not name:
+            raise ValueError("Variable name is required")
+        if chosen not in ALLOWED_TYPES:
+            raise ValueError(f"Unsupported confirmed type for {name}: {chosen}")
+        coding = item.get("coding", {}) or {}
+        if not isinstance(coding, dict):
+            raise ValueError(f"Coding dictionary for {name} must be an object")
+        if chosen in {"binary", "categorical"} and not coding:
+            blocked.append({"file": file_name, "sheet": sheet, "name": name, "reason": "Categorical/binary variable requires explicit labels or a coding dictionary."})
+        normalized.append({"file": file_name, "sheet": sheet, "name": name, "confirmed_type": chosen, "coding": coding, "analysis_role": str(item.get("analysis_role", "auto")).strip().lower() or "auto"})
+    return {"ready": not blocked, "variables": normalized, "blocked": blocked, "message": "Variable contract accepted." if not blocked else "Coding confirmation is still required before analysis."}
