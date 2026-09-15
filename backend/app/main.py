@@ -5,9 +5,11 @@ import numpy as np
 import pandas as pd
 from .analysis_engine import descriptive, categorical_association, diagnostic_accuracy, roc_auc, robust_poisson, logistic_regression, table_one, data_quality
 from .openeepi_engine import screening as openeepi_screening, calculate as openeepi_calculate
+from .dummy_table_engine import analyse_dummy_table
 
-app = FastAPI(title='Medical Data Analysis API', version='0.6.0')
+app = FastAPI(title='Medical Data Analysis API', version='0.7.0')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv'}
+DUMMY_SUFFIXES={'.csv','.xlsx','.xls','.tsv','.txt','.json'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 
 def load_dataframe(filename,content):
@@ -58,6 +60,18 @@ async def roc_endpoint(file:UploadFile=File(...),test:str='',outcome:str=''):
     df=load_dataframe(file.filename or 'upload.csv',await file.read())
     try:return {'method':'roc_auc','results':roc_auc(df,test,outcome)}
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
+@app.post('/api/v1/analysis/dummy-table')
+async def dummy_table_endpoint(dataset:UploadFile=File(...), specification:str=Form(...)):
+    """Analyse an uploaded dataset according to a machine-readable dummy-table specification."""
+    try:
+        df=load_dataframe(dataset.filename or 'upload.csv',await dataset.read())
+        spec=json.loads(specification)
+        return {'method':'dummy_table_analysis','results':analyse_dummy_table(df,spec)}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(422,f'Invalid dummy-table specification JSON: {exc}') from exc
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
 
 @app.post('/api/v1/openeepi/calculate')
 async def openeepi_calculate_endpoint(config:str=Form(...)):
