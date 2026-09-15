@@ -11,7 +11,7 @@ from .dummy_table_parser import build_spec
 from .dummy_table_fill import fill_dummy_table
 from .rr_analysis import crude_rr, adjusted_rr, format_rr
 
-app = FastAPI(title='Medical Data Analysis API', version='1.0.0')
+app = FastAPI(title='Medical Data Analysis API', version='1.1.0')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 
@@ -81,13 +81,26 @@ async def dummy_table_template_endpoint(dataset:UploadFile=File(...), dummy_tabl
     except Exception as exc: raise HTTPException(422,f'Unable to parse dummy table: {exc}') from exc
 
 @app.post('/api/v1/dummy-table/fill')
-async def dummy_table_fill_endpoint(dataset:list[UploadFile]=File(...), dummy_table:UploadFile=File(...)):
+async def dummy_table_fill_endpoint(
+    dataset:list[UploadFile]=File(...),
+    dummy_table:UploadFile=File(...),
+    outcome:str=Form(''),
+    outcome_positive:str=Form(''),
+    adjustment_variables:str=Form(''),
+):
     try:
         dataset_bytes=[]; dataset_names=[]
         for upload in dataset:
             dataset_bytes.append(await upload.read()); dataset_names.append(upload.filename or 'upload.csv')
         dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'
-        output,meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name)
+        positive=[x.strip() for x in outcome_positive.split(',') if x.strip()] or None
+        adjustments=[x.strip() for x in adjustment_variables.split(',') if x.strip()] or None
+        output,meta=fill_dummy_table(
+            dataset_bytes,dataset_names,dummy_bytes,dummy_name,
+            outcome=outcome.strip() or None,
+            outcome_positive=positive,
+            adjustment_variables=adjustments,
+        )
         base=dummy_name.rsplit('.',1)[0]
         return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
