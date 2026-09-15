@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from . import dummy_table_fill as dummy_engine
 from .dummy_table_fill import fill_dummy_table
 from .dummy_docx import docx_dummy_to_xlsx
 from .data_intelligence import profile_multiple_workbooks, validate_variable_confirmations
@@ -41,8 +42,32 @@ def _stage(job_id, percent, stage, message, started):
     _log(job_id, message)
 
 
+def _apply_manual_mappings(manual_mapping, dataset_columns):
+    """Temporarily force dummy-table variable labels to the user's exact columns."""
+    if not manual_mapping:
+        return {}
+    missing = [column for column in manual_mapping.values() if column not in dataset_columns]
+    if missing:
+        raise ValueError(f"Manual mapping refers to dataset variable(s) not found: {', '.join(missing)}")
+    backups = {}
+    for dummy_variable, dataset_variable in manual_mapping.items():
+        canonical = dummy_engine._canonical_variable(dummy_variable)
+        backups[canonical] = list(dummy_engine.VARIABLE_ALIASES.get(canonical, []))
+        aliases = list(dummy_engine.VARIABLE_ALIASES.get(canonical, []))
+        if dataset_variable not in aliases:
+            aliases.insert(0, dataset_variable)
+        dummy_engine.VARIABLE_ALIASES[canonical] = aliases
+    return backups
+
+
+def _restore_manual_mappings(backups):
+    for canonical, aliases in backups.items():
+        dummy_engine.VARIABLE_ALIASES[canonical] = aliases
+
+
 def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjustments, manual_mapping):
     started = time.time()
+    mapping_backups = {}
     try:
         _set(job_id, status="running")
         _log(job_id, f"Background worker started for job {job_id[:8]}")
@@ -54,6 +79,13 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
         _log(job_id, f"Dummy table: {dummy_name}")
         _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure", started)
         time.sleep(0.05)
+
+        if manual_mapping:
+            dataset_columns = set()
+            for content, name in zip(datasets, names):
+                dataset_columns.update(str(c) for c in read_dataset(name, content).columns)
+            mapping_backups = _apply_manual_mappings(manual_mapping, dataset_columns)
+            _log(job_id, "Manual dataset-variable mappings validated and applied")
 
         engine_dummy = dummy
         engine_dummy_name = dummy_name
@@ -70,8 +102,12 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
             outcome=outcome or None,
             outcome_positive=positive or None,
             adjustment_variables=adjustments or None,
-            manual_variable_mapping=manual_mapping or None,
         )
+        if manual_mapping:
+            meta["variable_mappings"] = [
+                {"dummy_variable": dummy_variable, "dataset_variable": dataset_variable, "confidence": 1.0, "source": "manual"}
+                for dummy_variable, dataset_variable in manual_mapping.items()
+            ]
         _log(job_id, "Dataset parsing and statistical table generation completed")
         _stage(job_id, 90, "Generating filled Excel result", "Building the final filled Excel workbook", started)
         time.sleep(0.05)
@@ -82,6 +118,8 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
         elapsed = round(time.time() - started, 1)
         _set(job_id, status="failed", percent=100, stage="Analysis failed", error=str(exc), elapsed_seconds=elapsed, eta_seconds=0)
         _log(job_id, f"Analysis failed after {elapsed}s: {exc}", "ERROR")
+    finally:
+        _restore_manual_mappings(mapping_backups)
 
 
 @router.post("/dummy-table/start")
