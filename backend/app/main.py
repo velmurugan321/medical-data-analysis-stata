@@ -14,19 +14,31 @@ from .rr_analysis import crude_rr, adjusted_rr, format_rr, _binary
 from .progress_jobs import router as progress_router
 from .data_intelligence import profile_workbook, profile_multiple_workbooks
 
-app = FastAPI(title='Medical Data Analysis API', version='1.4.0')
-ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv','.docx'}
+app = FastAPI(title='Medical Data Analysis API', version='1.5.0')
+ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.xlsm','.dta','.tsv','.ods','.sav','.sas7bdat','.json','.txt','.docx'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 app.include_router(progress_router)
 
 def load_dataframe(filename,content):
     name=filename.lower(); suffix=next((s for s in ALLOWED_SUFFIXES if name.endswith(s)),None)
-    if suffix is None: raise HTTPException(400,'Unsupported file type. Use CSV, XLSX, XLS, DTA, TSV or DOCX.')
+    if suffix is None: raise HTTPException(400,'Unsupported file type. Use CSV, XLSX, XLS, XLSM, DTA, TSV, ODS, SAV, SAS7BDAT, JSON, TXT or DOCX.')
     try:
         if suffix=='.csv': return pd.read_csv(io.BytesIO(content))
         if suffix=='.tsv': return pd.read_csv(io.BytesIO(content),sep='\t')
-        if suffix in {'.xlsx','.xls'}: return pd.read_excel(io.BytesIO(content))
+        if suffix in {'.xlsx','.xls','.xlsm','.ods'}: return pd.read_excel(io.BytesIO(content), engine='odf' if suffix=='.ods' else None)
         if suffix=='.dta': return pd.read_stata(io.BytesIO(content))
+        if suffix=='.sav':
+            import pyreadstat
+            df,_=pyreadstat.read_sav(io.BytesIO(content)); return df
+        if suffix=='.sas7bdat':
+            import pyreadstat
+            df,_=pyreadstat.read_sas7bdat(io.BytesIO(content)); return df
+        if suffix=='.json':
+            try: return pd.read_json(io.BytesIO(content))
+            except ValueError: return pd.json_normalize(json.loads(content.decode('utf-8')))
+        if suffix=='.txt':
+            try: return pd.read_csv(io.BytesIO(content),sep=None,engine='python')
+            except Exception: return pd.read_csv(io.BytesIO(content),header=None)
         if suffix=='.docx':
             doc=Document(io.BytesIO(content))
             if not doc.tables: raise ValueError('DOCX contains no tables. Upload a DOCX with a structured data table.')
@@ -62,18 +74,11 @@ async def inspect_workbooks(files:list[UploadFile]=File(...)):
     if len(files)>10: raise HTTPException(400,'A maximum of 10 dataset files can be inspected at once')
     payload=[]
     for upload in files:
-        name=upload.filename or 'upload.xlsx'; content=await upload.read()
-        if name.lower().endswith(('.xlsx','.xls')):
-            payload.append((name,content))
-        else:
-            df=load_dataframe(name,content)
-            from .data_intelligence import profile_variable
-            payload.append((name,content))
+        name=upload.filename or 'upload.xlsx'; content=await upload.read(); payload.append((name,content))
     try:
-        # Excel files are profiled sheet-by-sheet; non-Excel files remain supported as one table.
         results=[]
         for name,content in payload:
-            if name.lower().endswith(('.xlsx','.xls')):
+            if name.lower().endswith(('.xlsx','.xls','.xlsm')):
                 results.append(profile_workbook(content,name))
             else:
                 df=load_dataframe(name,content)
@@ -140,8 +145,8 @@ async def dummy_table_fill_endpoint(dataset:list[UploadFile]=File(...),dummy_tab
     try:
         dataset_bytes=[]; dataset_names=[]
         for upload in dataset: dataset_bytes.append(await upload.read()); dataset_names.append(upload.filename or 'upload.csv')
-        dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'; positive=[x.strip() for x in outcome_positive.split(',') if x.strip()] or None; adjustments=[x.strip() for x in adjustment_variables.split(',') if x.strip()] or None
-        output,meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name,outcome=outcome.strip() or None,outcome_positive=positive,adjustment_variables=adjustments)
+        dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'; positive=[x.strip() for x in outcome_positive.split(',') if x.strip()] or None; adjustments=[x.strip() for x in adjustment_variables.split(',') if x.strip()]
+        output,meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name,outcome=outcome.strip() or None,outcome_positive=positive,adjustment_variables=adjustments or None)
         base=dummy_name.rsplit('.',1)[0]; return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     except Exception as exc: raise HTTPException(500,f'Unable to fill dummy table: {exc}') from exc
