@@ -1,15 +1,28 @@
-# Patient / confidential data
+# Patient / confidential data — never commit participant-level datasets
 *.dta
 *.xlsx
+*.xls
+*.xlsm
 *.csv
+*.tsv
+*.ods
 *.sav
 *.sas7bdat
+*.json
 
-# Stata output
+# Generated analysis outputs
 *.log
 *.smcl
 *.gph
 *.ster
+*_filled.xlsx
+results/
+outputs/
+
+# Local secrets / environment
+.env
+.env.*
+!.env.example
 
 # Temporary files
 *.tmp
