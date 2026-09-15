@@ -66,6 +66,26 @@ def _restore_manual_mappings(backups):
         dummy_engine.VARIABLE_ALIASES[canonical] = aliases
 
 
+def _manual_only_finder(manual_mapping, dataset_columns):
+    """Return a finder that honours ONLY variables explicitly mapped by the user.
+
+    This prevents automatic alias/category matching from silently filling rows that the
+    user intentionally left unmapped in the Variable Matching report.
+    """
+    canonical_mapping = {
+        dummy_engine._canonical_variable(k): v for k, v in (manual_mapping or {}).items()
+    }
+
+    def finder(df, variable, categories=None):
+        canonical = dummy_engine._canonical_variable(variable)
+        selected = canonical_mapping.get(canonical)
+        if selected and selected in df.columns:
+            return selected, 1.0
+        return None, 0.0
+
+    return finder
+
+
 def _excel_sheet_columns(content):
     """Return {sheet: set(columns)} for every readable Excel worksheet."""
     book = pd.ExcelFile(io.BytesIO(content))
@@ -80,7 +100,7 @@ def _excel_sheet_columns(content):
 
 
 def _choose_excel_sheet(content, required_columns):
-    """Choose a single sheet containing all selected row-level analysis variables."""
+    """Choose the best worksheet without failing because some mapped variables are elsewhere."""
     sheets = _excel_sheet_columns(content)
     if not sheets:
         return None, set()
@@ -90,31 +110,21 @@ def _choose_excel_sheet(content, required_columns):
         return sheet, sheets[sheet]
     ranked = sorted(
         ((sheet, len(required & cols), len(cols), cols) for sheet, cols in sheets.items()),
-        key=lambda x: (x[1] == len(required), x[1], x[2]),
+        key=lambda x: (x[1], x[2]),
         reverse=True,
     )
     best = ranked[0]
-    if best[1] == 0:
-        return None, set()
-    if best[1] < len(required):
-        missing = sorted(required - best[3])
-        raise ValueError(
-            "Selected dataset variables are spread across different Excel sheets and cannot be analysed as one row-level dataset. "
-            f"Variables not found together on one sheet: {', '.join(missing)}. Please select variables from the same sheet."
-        )
     return best[0], best[3]
 
 
 def _prepare_sheet_aware_datasets(datasets, names, manual_mapping, outcome):
-    """Materialise the selected Excel worksheet as a one-sheet analysis workbook.
+    """Materialise the outcome/analysis worksheet without rejecting partial mappings.
 
-    This prevents the statistical engine from silently using the first worksheet when the user
-    selected variables from another worksheet. Variables used in one analysis must share a sheet
-    so that participant rows remain aligned.
+    The outcome sheet is the primary row-level dataset. Variables that were manually mapped
+    but are not present on that sheet are reported as skipped instead of causing the whole job
+    to fail. This is safer than inventing row alignment across unrelated worksheets.
     """
-    required = list(manual_mapping.values())
-    if outcome:
-        required.append(outcome)
+    required = [outcome] if outcome else []
     if not required:
         return datasets, names, [None] * len(names)
 
@@ -128,7 +138,7 @@ def _prepare_sheet_aware_datasets(datasets, names, manual_mapping, outcome):
             continue
         sheet, _ = _choose_excel_sheet(content, required)
         if not sheet:
-            raise ValueError(f"Could not find the selected analysis variables in any worksheet of {name}.")
+            raise ValueError(f"Could not find the selected outcome variable in any worksheet of {name}.")
         df = pd.read_excel(io.BytesIO(content), sheet_name=sheet)
         output = io.BytesIO()
         df.to_excel(output, index=False, sheet_name='AnalysisData')
@@ -141,12 +151,15 @@ def _prepare_sheet_aware_datasets(datasets, names, manual_mapping, outcome):
 def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjustments, manual_mapping):
     started = time.time()
     mapping_backups = {}
+    original_finder = dummy_engine._find_dataset_column
     try:
         _set(job_id, status="running")
         _log(job_id, f"Background worker started for job {job_id[:8]}")
         _log(job_id, f"Received {len(datasets)} dataset file(s): {', '.join(names)}")
         if manual_mapping:
             _log(job_id, f"Manual variable mappings received: {len(manual_mapping)}")
+        else:
+            _log(job_id, "No manual variable mappings supplied; automatic matching is enabled")
         _stage(job_id, 5, "Reading uploaded files", "Reading uploaded dataset files and dummy table", started)
         time.sleep(0.05)
         _log(job_id, f"Dummy table: {dummy_name}")
@@ -160,12 +173,23 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
             readable = ', '.join(f"{name}: {sheet}" for name, sheet in zip(names, selected_sheets) if sheet)
             _log(job_id, f"Excel sheet selected for row-level analysis: {readable}")
 
+        dataset_columns = set()
+        for content, name in zip(analysis_datasets, analysis_names):
+            dataset_columns.update(str(c) for c in read_dataset(name, content).columns)
+
         if manual_mapping:
-            dataset_columns = set()
-            for content, name in zip(analysis_datasets, analysis_names):
-                dataset_columns.update(str(c) for c in read_dataset(name, content).columns)
-            mapping_backups = _apply_manual_mappings(manual_mapping, dataset_columns)
-            _log(job_id, "Manual dataset-variable mappings validated and applied")
+            # Validate against the actual analysis dataset, but do not fail the job for a
+            # mapping that belongs to another worksheet. That mapping will simply be skipped.
+            available = {column for column in manual_mapping.values() if column in dataset_columns}
+            skipped = [column for column in manual_mapping.values() if column not in dataset_columns]
+            if skipped:
+                _log(job_id, f"Skipped mapped variable(s) not available on the selected analysis sheet: {', '.join(skipped)}", "WARNING")
+            effective_mapping = {k: v for k, v in manual_mapping.items() if v in available}
+            mapping_backups = _apply_manual_mappings(effective_mapping, dataset_columns)
+            dummy_engine._find_dataset_column = _manual_only_finder(effective_mapping, dataset_columns)
+            _log(job_id, f"Manual mappings applied as authoritative selection: {len(effective_mapping)}")
+        else:
+            effective_mapping = {}
 
         engine_dummy = dummy
         engine_dummy_name = dummy_name
@@ -189,7 +213,7 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
             ]
         if manual_mapping:
             meta["variable_mappings"] = [
-                {"dummy_variable": dummy_variable, "dataset_variable": dataset_variable, "confidence": 1.0, "source": "manual"}
+                {"dummy_variable": dummy_variable, "dataset_variable": dataset_variable, "confidence": 1.0 if dataset_variable in dataset_columns else 0.0, "source": "manual", "status": "applied" if dataset_variable in dataset_columns else "skipped"}
                 for dummy_variable, dataset_variable in manual_mapping.items()
             ]
         _log(job_id, "Dataset parsing and statistical table generation completed")
@@ -203,6 +227,7 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
         _set(job_id, status="failed", percent=100, stage="Analysis failed", error=str(exc), elapsed_seconds=elapsed, eta_seconds=0)
         _log(job_id, f"Analysis failed after {elapsed}s: {exc}", "ERROR")
     finally:
+        dummy_engine._find_dataset_column = original_finder
         _restore_manual_mappings(mapping_backups)
 
 
