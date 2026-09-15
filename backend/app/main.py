@@ -9,8 +9,9 @@ from .openeepi_engine import screening as openeepi_screening, calculate as opene
 from .dummy_table_engine import analyse_dummy_table
 from .dummy_table_parser import build_spec
 from .dummy_table_fill import fill_dummy_table
+from .rr_analysis import crude_rr, adjusted_rr, format_rr
 
-app = FastAPI(title='Medical Data Analysis API', version='0.9.0')
+app = FastAPI(title='Medical Data Analysis API', version='1.0.0')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 
@@ -73,8 +74,7 @@ async def dummy_table_endpoint(dataset:UploadFile=File(...), specification:str=F
 
 @app.post('/api/v1/dummy-table/analyze-template')
 async def dummy_table_template_endpoint(dataset:UploadFile=File(...), dummy_table:UploadFile=File(...)):
-    dataset_bytes=await dataset.read(); dummy_bytes=await dummy_table.read()
-    df=load_dataframe(dataset.filename or 'upload.csv',dataset_bytes)
+    dataset_bytes=await dataset.read(); dummy_bytes=await dummy_table.read(); df=load_dataframe(dataset.filename or 'upload.csv',dataset_bytes)
     try:
         spec=build_spec(df,dummy_bytes,dummy_table.filename or 'dummy.xlsx')
         return {'method':'dummy_table_template_analysis','results':{'dataset_filename':dataset.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'dummy_filename':dummy_table.filename,'sheets':spec['sheets'],'rows_spec':spec['rows_spec']}}
@@ -87,17 +87,32 @@ async def dummy_table_fill_endpoint(dataset:list[UploadFile]=File(...), dummy_ta
         for upload in dataset:
             dataset_bytes.append(await upload.read()); dataset_names.append(upload.filename or 'upload.csv')
         dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'
-        output, meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name)
+        output,meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name)
         base=dummy_name.rsplit('.',1)[0]
         return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     except Exception as exc: raise HTTPException(500,f'Unable to fill dummy table: {exc}') from exc
 
+@app.post('/api/v1/analysis/rr-dummy')
+async def rr_dummy_endpoint(file:UploadFile=File(...), config:str=Form(...)):
+    try:
+        cfg=json.loads(config); df=load_dataframe(file.filename or 'upload.csv',await file.read())
+        outcome_col=cfg['outcome']; exposure_col=cfg['exposure']; covariates=cfg.get('covariates',[])
+        if outcome_col not in df.columns or exposure_col not in df.columns:
+            raise HTTPException(422,'Outcome or exposure variable was not found in dataset')
+        y=_binary(df[outcome_col],cfg.get('outcome_positive',[1,'1','yes','positive','unfavourable','no adherence']))
+        e=_binary(df[exposure_col],cfg.get('exposure_positive',[1,'1','intervention','case']))
+        crude=crude_rr(y,e)
+        adj=adjusted_rr(pd.DataFrame({'_y':y,'_e':e,**{c:df[c] for c in covariates if c in df.columns}}),'_y','_e',[c for c in covariates if c in df.columns],reference=0)
+        return {'method':'crude_and_adjusted_rr','results':{'crude':crude,'adjusted':adj,'formatted':{'crude':format_rr(crude),'adjusted':format_rr(adj)}}}
+    except json.JSONDecodeError as exc: raise HTTPException(422,f'Invalid RR configuration JSON: {exc}') from exc
+    except KeyError as exc: raise HTTPException(422,f'Missing RR configuration field: {exc.args[0]}') from exc
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
 @app.post('/api/v1/openeepi/calculate')
 async def openeepi_calculate_endpoint(config:str=Form(...)):
     try:
-        cfg=json.loads(config); module=cfg.pop('module'); result=openeepi_calculate(module,cfg)
-        return {'method':f'OpenEpi:{module}','results':result}
+        cfg=json.loads(config); module=cfg.pop('module'); result=openeepi_calculate(module,cfg); return {'method':f'OpenEpi:{module}','results':result}
     except KeyError as exc: raise HTTPException(422,f'Missing calculator field: {exc.args[0]}') from exc
     except (ValueError,TypeError,OverflowError,json.JSONDecodeError,IndexError) as exc: raise HTTPException(422,str(exc)) from exc
 
