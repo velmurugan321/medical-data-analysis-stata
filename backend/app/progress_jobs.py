@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from fastapi.responses import StreamingResponse
 
 from .dummy_table_fill import fill_dummy_table
+from .dummy_docx import docx_dummy_to_xlsx
 from .data_intelligence import profile_multiple_workbooks, validate_variable_confirmations
 from .workflow_engine import read_dataset, data_quality_plus, diagnostic_validated, roc_validated
 from .analysis_engine import robust_poisson, logistic_regression
@@ -50,7 +51,27 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
         time.sleep(0.05)
         _log(job_id, f"Dummy table: {dummy_name}")
         _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure", started)
-        output, meta = fill_dummy_table(datasets, names, dummy, dummy_name, outcome=outcome or None, outcome_positive=positive or None, adjustment_variables=adjustments or None)
+        time.sleep(0.05)
+
+        # The statistical engine works on XLSX/XLS templates. DOCX dummy tables
+        # are converted in memory so users can upload their Word templates
+        # without changing the validated calculation engine.
+        engine_dummy = dummy
+        engine_dummy_name = dummy_name
+        if dummy_name.lower().endswith(".docx"):
+            _log(job_id, "DOCX dummy table detected; converting first Word table to an in-memory Excel template")
+            engine_dummy = docx_dummy_to_xlsx(dummy)
+            engine_dummy_name = dummy_name.rsplit('.', 1)[0] + '.xlsx'
+
+        output, meta = fill_dummy_table(
+            datasets,
+            names,
+            engine_dummy,
+            engine_dummy_name,
+            outcome=outcome or None,
+            outcome_positive=positive or None,
+            adjustment_variables=adjustments or None,
+        )
         _log(job_id, "Dataset parsing and statistical table generation completed")
         _stage(job_id, 90, "Generating filled Excel result", "Building the final filled Excel workbook", started)
         time.sleep(0.05)
