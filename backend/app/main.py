@@ -3,12 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import io, json
 import numpy as np
 import pandas as pd
+from fastapi.responses import StreamingResponse
 from .analysis_engine import descriptive, categorical_association, diagnostic_accuracy, roc_auc, robust_poisson, logistic_regression, table_one, data_quality
 from .openeepi_engine import screening as openeepi_screening, calculate as openeepi_calculate
 from .dummy_table_engine import analyse_dummy_table
 from .dummy_table_parser import build_spec
+from .dummy_table_fill import fill_dummy_table
 
-app = FastAPI(title='Medical Data Analysis API', version='0.8.0')
+app = FastAPI(title='Medical Data Analysis API', version='0.9.0')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 
@@ -77,6 +79,19 @@ async def dummy_table_template_endpoint(dataset:UploadFile=File(...), dummy_tabl
         spec=build_spec(df,dummy_bytes,dummy_table.filename or 'dummy.xlsx')
         return {'method':'dummy_table_template_analysis','results':{'dataset_filename':dataset.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'dummy_filename':dummy_table.filename,'sheets':spec['sheets'],'rows_spec':spec['rows_spec']}}
     except Exception as exc: raise HTTPException(422,f'Unable to parse dummy table: {exc}') from exc
+
+@app.post('/api/v1/dummy-table/fill')
+async def dummy_table_fill_endpoint(dataset:list[UploadFile]=File(...), dummy_table:UploadFile=File(...)):
+    try:
+        dataset_bytes=[]; dataset_names=[]
+        for upload in dataset:
+            dataset_bytes.append(await upload.read()); dataset_names.append(upload.filename or 'upload.csv')
+        dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'
+        output, meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name)
+        base=dummy_name.rsplit('.',1)[0]
+        return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    except Exception as exc: raise HTTPException(500,f'Unable to fill dummy table: {exc}') from exc
 
 @app.post('/api/v1/openeepi/calculate')
 async def openeepi_calculate_endpoint(config:str=Form(...)):
