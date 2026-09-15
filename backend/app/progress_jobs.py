@@ -1,8 +1,8 @@
 import io
-import json
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -13,32 +13,64 @@ _jobs = {}
 _lock = threading.Lock()
 
 
+def _log(job_id, message, level="INFO"):
+    entry = {
+        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "level": level,
+        "message": message,
+    }
+    with _lock:
+        job = _jobs.get(job_id)
+        if job:
+            job.setdefault("logs", []).append(entry)
+            job["logs"] = job["logs"][-200:]
+
+
 def _set(job_id, **updates):
     with _lock:
         if job_id in _jobs:
             _jobs[job_id].update(updates)
 
 
+def _stage(job_id, percent, stage, message, started):
+    elapsed = max(0.0, time.time() - started)
+    eta = None
+    if percent > 0 and percent < 100:
+        eta = round(elapsed * (100 - percent) / percent, 1)
+    _set(job_id, percent=percent, stage=stage, eta_seconds=eta,
+         elapsed_seconds=round(elapsed, 1))
+    _log(job_id, message)
+
+
 def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjustments):
     started = time.time()
     try:
-        _set(job_id, status="running", percent=5, stage="Reading uploaded files", eta_seconds=None)
+        _set(job_id, status="running")
+        _log(job_id, f"Background worker started for job {job_id[:8]}")
+        _log(job_id, f"Received {len(datasets)} dataset file(s): {', '.join(names)}")
+        _stage(job_id, 5, "Reading uploaded files", "Reading uploaded dataset files and dummy table")
         time.sleep(0.05)
-        _set(job_id, percent=15, stage="Parsing dataset and dummy table")
+        _log(job_id, f"Dummy table: {dummy_name}")
+        _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure")
         output, meta = fill_dummy_table(
             datasets, names, dummy, dummy_name,
             outcome=outcome or None,
             outcome_positive=positive or None,
             adjustment_variables=adjustments or None,
         )
-        _set(job_id, percent=90, stage="Generating filled Excel result")
+        _log(job_id, "Dataset parsing and statistical table generation completed")
+        _stage(job_id, 90, "Generating filled Excel result", "Building the final filled Excel workbook")
         time.sleep(0.05)
+        elapsed = round(time.time() - started, 1)
         _set(job_id, status="completed", percent=100, stage="Analysis complete", eta_seconds=0,
              output=output, filename=dummy_name.rsplit('.', 1)[0] + '_filled.xlsx', meta=meta,
-             elapsed_seconds=round(time.time() - started, 1))
+             elapsed_seconds=elapsed)
+        _log(job_id, f"Analysis completed successfully in {elapsed}s", "SUCCESS")
     except Exception as exc:
+        elapsed = round(time.time() - started, 1)
         _set(job_id, status="failed", percent=100, stage="Analysis failed", error=str(exc),
-             elapsed_seconds=round(time.time() - started, 1))
+             elapsed_seconds=elapsed, eta_seconds=0)
+        _log(job_id, f"Analysis failed after {elapsed}s: {exc}", "ERROR")
 
 
 @router.post("/dummy-table/start")
@@ -62,8 +94,12 @@ async def start_dummy_job(
         _jobs[job_id] = {
             'job_id': job_id, 'status': 'queued', 'percent': 0,
             'stage': 'Queued for analysis', 'eta_seconds': None,
-            'elapsed_seconds': 0, 'error': None,
+            'elapsed_seconds': 0, 'error': None, 'logs': [],
         }
+    _log(job_id, "Analysis job queued")
+    _log(job_id, f"Outcome: {outcome.strip() or 'auto-detect'}")
+    _log(job_id, f"Positive values: {', '.join(positive) if positive else 'auto-detect'}")
+    _log(job_id, f"Adjusted RR covariates: {', '.join(adjustments) if adjustments else 'none'}")
     background_tasks.add_task(_worker, job_id, datasets, names, dummy, dummy_table.filename or 'dummy.xlsx',
                               outcome.strip(), positive, adjustments)
     return {'job_id': job_id, 'status': 'queued', 'percent': 0, 'stage': 'Queued for analysis'}
@@ -76,6 +112,15 @@ def job_status(job_id: str):
         if not job:
             raise HTTPException(404, 'Analysis job not found')
         return {k: v for k, v in job.items() if k != 'output'}
+
+
+@router.get("/{job_id}/logs")
+def job_logs(job_id: str):
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, 'Analysis job not found')
+        return {'job_id': job_id, 'status': job.get('status'), 'logs': list(job.get('logs', []))}
 
 
 @router.get("/{job_id}/download")
