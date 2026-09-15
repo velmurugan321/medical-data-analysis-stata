@@ -11,10 +11,12 @@ from .dummy_table_engine import analyse_dummy_table
 from .dummy_table_parser import build_spec
 from .dummy_table_fill import fill_dummy_table
 from .rr_analysis import crude_rr, adjusted_rr, format_rr, _binary
+from .progress_jobs import router as progress_router
 
-app = FastAPI(title='Medical Data Analysis API', version='1.2.1')
+app = FastAPI(title='Medical Data Analysis API', version='1.3.0')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv','.docx'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
+app.include_router(progress_router)
 
 def load_dataframe(filename,content):
     name=filename.lower(); suffix=next((s for s in ALLOWED_SUFFIXES if name.endswith(s)),None)
@@ -32,8 +34,7 @@ def load_dataframe(filename,content):
                 rows=[[cell.text.strip() for cell in row.cells] for row in table.rows]
                 if rows: tables.append(rows)
             if not tables: raise ValueError('DOCX contains no readable table rows.')
-            rows=max(tables,key=lambda x: len(x)*max(len(r) for r in x))
-            width=max(len(r) for r in rows); rows=[r+['']*(width-len(r)) for r in rows]
+            rows=max(tables,key=lambda x: len(x)*max(len(r) for r in x)); width=max(len(r) for r in rows); rows=[r+['']*(width-len(r)) for r in rows]
             header=rows[0]
             if len(set(header)) != len(header): header=[f'V{i+1}' for i in range(width)]
             return pd.DataFrame(rows[1:],columns=header)
