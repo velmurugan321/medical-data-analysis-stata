@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 import numpy as np
+import pandas as pd
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -65,6 +66,78 @@ def _restore_manual_mappings(backups):
         dummy_engine.VARIABLE_ALIASES[canonical] = aliases
 
 
+def _excel_sheet_columns(content):
+    """Return {sheet: set(columns)} for every readable Excel worksheet."""
+    book = pd.ExcelFile(io.BytesIO(content))
+    result = {}
+    for sheet in book.sheet_names:
+        try:
+            probe = pd.read_excel(io.BytesIO(content), sheet_name=sheet, nrows=5)
+            result[sheet] = {str(c) for c in probe.columns if not str(c).startswith("Unnamed:")}
+        except Exception:
+            result[sheet] = set()
+    return result
+
+
+def _choose_excel_sheet(content, required_columns):
+    """Choose a single sheet containing all selected row-level analysis variables."""
+    sheets = _excel_sheet_columns(content)
+    if not sheets:
+        return None, set()
+    required = {str(x).strip() for x in required_columns if str(x).strip()}
+    if not required:
+        sheet = next(iter(sheets))
+        return sheet, sheets[sheet]
+    ranked = sorted(
+        ((sheet, len(required & cols), len(cols), cols) for sheet, cols in sheets.items()),
+        key=lambda x: (x[1] == len(required), x[1], x[2]),
+        reverse=True,
+    )
+    best = ranked[0]
+    if best[1] == 0:
+        return None, set()
+    if best[1] < len(required):
+        missing = sorted(required - best[3])
+        raise ValueError(
+            "Selected dataset variables are spread across different Excel sheets and cannot be analysed as one row-level dataset. "
+            f"Variables not found together on one sheet: {', '.join(missing)}. Please select variables from the same sheet."
+        )
+    return best[0], best[3]
+
+
+def _prepare_sheet_aware_datasets(datasets, names, manual_mapping, outcome):
+    """Materialise the selected Excel worksheet as a one-sheet analysis workbook.
+
+    This prevents the statistical engine from silently using the first worksheet when the user
+    selected variables from another worksheet. Variables used in one analysis must share a sheet
+    so that participant rows remain aligned.
+    """
+    required = list(manual_mapping.values())
+    if outcome:
+        required.append(outcome)
+    if not required:
+        return datasets, names, [None] * len(names)
+
+    prepared, prepared_names, selected_sheets = [], [], []
+    for content, name in zip(datasets, names):
+        ext = name.lower().rsplit('.', 1)[-1]
+        if ext not in ('xlsx', 'xls', 'xlsm'):
+            prepared.append(content)
+            prepared_names.append(name)
+            selected_sheets.append(None)
+            continue
+        sheet, _ = _choose_excel_sheet(content, required)
+        if not sheet:
+            raise ValueError(f"Could not find the selected analysis variables in any worksheet of {name}.")
+        df = pd.read_excel(io.BytesIO(content), sheet_name=sheet)
+        output = io.BytesIO()
+        df.to_excel(output, index=False, sheet_name='AnalysisData')
+        prepared.append(output.getvalue())
+        prepared_names.append(name.rsplit('.', 1)[0] + '_AnalysisData.xlsx')
+        selected_sheets.append(sheet)
+    return prepared, prepared_names, selected_sheets
+
+
 def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjustments, manual_mapping):
     started = time.time()
     mapping_backups = {}
@@ -80,9 +153,16 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
         _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure", started)
         time.sleep(0.05)
 
+        analysis_datasets, analysis_names, selected_sheets = _prepare_sheet_aware_datasets(
+            datasets, names, manual_mapping, outcome
+        )
+        if any(selected_sheets):
+            readable = ', '.join(f"{name}: {sheet}" for name, sheet in zip(names, selected_sheets) if sheet)
+            _log(job_id, f"Excel sheet selected for row-level analysis: {readable}")
+
         if manual_mapping:
             dataset_columns = set()
-            for content, name in zip(datasets, names):
+            for content, name in zip(analysis_datasets, analysis_names):
                 dataset_columns.update(str(c) for c in read_dataset(name, content).columns)
             mapping_backups = _apply_manual_mappings(manual_mapping, dataset_columns)
             _log(job_id, "Manual dataset-variable mappings validated and applied")
@@ -95,14 +175,18 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
             engine_dummy_name = dummy_name.rsplit('.', 1)[0] + '.xlsx'
 
         output, meta = fill_dummy_table(
-            datasets,
-            names,
+            analysis_datasets,
+            analysis_names,
             engine_dummy,
             engine_dummy_name,
             outcome=outcome or None,
             outcome_positive=positive or None,
             adjustment_variables=adjustments or None,
         )
+        if selected_sheets and any(selected_sheets):
+            meta["analysis_sheets"] = [
+                {"dataset": name, "sheet": sheet} for name, sheet in zip(names, selected_sheets) if sheet
+            ]
         if manual_mapping:
             meta["variable_mappings"] = [
                 {"dummy_variable": dummy_variable, "dataset_variable": dataset_variable, "confidence": 1.0, "source": "manual"}
