@@ -41,21 +41,20 @@ def _stage(job_id, percent, stage, message, started):
     _log(job_id, message)
 
 
-def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjustments):
+def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjustments, manual_mapping):
     started = time.time()
     try:
         _set(job_id, status="running")
         _log(job_id, f"Background worker started for job {job_id[:8]}")
         _log(job_id, f"Received {len(datasets)} dataset file(s): {', '.join(names)}")
+        if manual_mapping:
+            _log(job_id, f"Manual variable mappings received: {len(manual_mapping)}")
         _stage(job_id, 5, "Reading uploaded files", "Reading uploaded dataset files and dummy table", started)
         time.sleep(0.05)
         _log(job_id, f"Dummy table: {dummy_name}")
         _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure", started)
         time.sleep(0.05)
 
-        # The statistical engine works on XLSX/XLS templates. DOCX dummy tables
-        # are converted in memory so users can upload their Word templates
-        # without changing the validated calculation engine.
         engine_dummy = dummy
         engine_dummy_name = dummy_name
         if dummy_name.lower().endswith(".docx"):
@@ -71,6 +70,7 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
             outcome=outcome or None,
             outcome_positive=positive or None,
             adjustment_variables=adjustments or None,
+            manual_variable_mapping=manual_mapping or None,
         )
         _log(job_id, "Dataset parsing and statistical table generation completed")
         _stage(job_id, 90, "Generating filled Excel result", "Building the final filled Excel workbook", started)
@@ -85,7 +85,7 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
 
 
 @router.post("/dummy-table/start")
-async def start_dummy_job(background_tasks: BackgroundTasks, dataset: list[UploadFile] = File(...), dummy_table: UploadFile = File(...), outcome: str = Form(''), outcome_positive: str = Form(''), adjustment_variables: str = Form('')):
+async def start_dummy_job(background_tasks: BackgroundTasks, dataset: list[UploadFile] = File(...), dummy_table: UploadFile = File(...), outcome: str = Form(''), outcome_positive: str = Form(''), adjustment_variables: str = Form(''), manual_variable_mapping: str = Form('')):
     job_id = uuid.uuid4().hex
     datasets, names = [], []
     for upload in dataset:
@@ -93,13 +93,22 @@ async def start_dummy_job(background_tasks: BackgroundTasks, dataset: list[Uploa
     dummy = await dummy_table.read()
     positive = [x.strip() for x in outcome_positive.split(',') if x.strip()]
     adjustments = [x.strip() for x in adjustment_variables.split(',') if x.strip()]
+    try:
+        parsed_mapping = json.loads(manual_variable_mapping) if manual_variable_mapping.strip() else {}
+        if not isinstance(parsed_mapping, dict):
+            raise ValueError('manual_variable_mapping must be a JSON object')
+        parsed_mapping = {str(k).strip(): str(v).strip() for k, v in parsed_mapping.items() if str(k).strip() and str(v).strip()}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(422, f'Invalid manual variable mapping JSON: {exc}') from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     with _lock:
         _jobs[job_id] = {'job_id': job_id, 'status': 'queued', 'percent': 0, 'stage': 'Queued for analysis', 'eta_seconds': None, 'elapsed_seconds': 0, 'error': None, 'logs': []}
     _log(job_id, "Analysis job queued")
     _log(job_id, f"Outcome: {outcome.strip() or 'auto-detect'}")
     _log(job_id, f"Positive values: {', '.join(positive) if positive else 'auto-detect'}")
     _log(job_id, f"Adjusted RR covariates: {', '.join(adjustments) if adjustments else 'none'}")
-    background_tasks.add_task(_worker, job_id, datasets, names, dummy, dummy_table.filename or 'dummy.xlsx', outcome.strip(), positive, adjustments)
+    background_tasks.add_task(_worker, job_id, datasets, names, dummy, dummy_table.filename or 'dummy.xlsx', outcome.strip(), positive, adjustments, parsed_mapping)
     return {'job_id': job_id, 'status': 'queued', 'percent': 0, 'stage': 'Queued for analysis'}
 
 
