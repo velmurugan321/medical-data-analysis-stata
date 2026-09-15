@@ -7,6 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from fastapi.responses import StreamingResponse
 
 from .dummy_table_fill import fill_dummy_table
+from .data_intelligence import profile_multiple_workbooks
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["analysis-progress"])
 _jobs = {}
@@ -14,11 +15,7 @@ _lock = threading.Lock()
 
 
 def _log(job_id, message, level="INFO"):
-    entry = {
-        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "level": level,
-        "message": message,
-    }
+    entry = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "level": level, "message": message}
     with _lock:
         job = _jobs.get(job_id)
         if job:
@@ -34,11 +31,8 @@ def _set(job_id, **updates):
 
 def _stage(job_id, percent, stage, message, started):
     elapsed = max(0.0, time.time() - started)
-    eta = None
-    if percent > 0 and percent < 100:
-        eta = round(elapsed * (100 - percent) / percent, 1)
-    _set(job_id, percent=percent, stage=stage, eta_seconds=eta,
-         elapsed_seconds=round(elapsed, 1))
+    eta = round(elapsed * (100 - percent) / percent, 1) if 0 < percent < 100 else None
+    _set(job_id, percent=percent, stage=stage, eta_seconds=eta, elapsed_seconds=round(elapsed, 1))
     _log(job_id, message)
 
 
@@ -48,69 +42,65 @@ def _worker(job_id, datasets, names, dummy, dummy_name, outcome, positive, adjus
         _set(job_id, status="running")
         _log(job_id, f"Background worker started for job {job_id[:8]}")
         _log(job_id, f"Received {len(datasets)} dataset file(s): {', '.join(names)}")
-        _stage(job_id, 5, "Reading uploaded files", "Reading uploaded dataset files and dummy table")
+        _stage(job_id, 5, "Reading uploaded files", "Reading uploaded dataset files and dummy table", started)
         time.sleep(0.05)
         _log(job_id, f"Dummy table: {dummy_name}")
-        _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure")
-        output, meta = fill_dummy_table(
-            datasets, names, dummy, dummy_name,
-            outcome=outcome or None,
-            outcome_positive=positive or None,
-            adjustment_variables=adjustments or None,
-        )
+        _stage(job_id, 15, "Parsing dataset and dummy table", "Parsing columns, rows, variables and dummy-table structure", started)
+        output, meta = fill_dummy_table(datasets, names, dummy, dummy_name, outcome=outcome or None, outcome_positive=positive or None, adjustment_variables=adjustments or None)
         _log(job_id, "Dataset parsing and statistical table generation completed")
-        _stage(job_id, 90, "Generating filled Excel result", "Building the final filled Excel workbook")
+        _stage(job_id, 90, "Generating filled Excel result", "Building the final filled Excel workbook", started)
         time.sleep(0.05)
         elapsed = round(time.time() - started, 1)
-        _set(job_id, status="completed", percent=100, stage="Analysis complete", eta_seconds=0,
-             output=output, filename=dummy_name.rsplit('.', 1)[0] + '_filled.xlsx', meta=meta,
-             elapsed_seconds=elapsed)
+        _set(job_id, status="completed", percent=100, stage="Analysis complete", eta_seconds=0, output=output, filename=dummy_name.rsplit('.', 1)[0] + '_filled.xlsx', meta=meta, elapsed_seconds=elapsed)
         _log(job_id, f"Analysis completed successfully in {elapsed}s", "SUCCESS")
     except Exception as exc:
         elapsed = round(time.time() - started, 1)
-        _set(job_id, status="failed", percent=100, stage="Analysis failed", error=str(exc),
-             elapsed_seconds=elapsed, eta_seconds=0)
+        _set(job_id, status="failed", percent=100, stage="Analysis failed", error=str(exc), elapsed_seconds=elapsed, eta_seconds=0)
         _log(job_id, f"Analysis failed after {elapsed}s: {exc}", "ERROR")
 
 
 @router.post("/dummy-table/start")
-async def start_dummy_job(
-    background_tasks: BackgroundTasks,
-    dataset: list[UploadFile] = File(...),
-    dummy_table: UploadFile = File(...),
-    outcome: str = Form(''),
-    outcome_positive: str = Form(''),
-    adjustment_variables: str = Form(''),
-):
+async def start_dummy_job(background_tasks: BackgroundTasks, dataset: list[UploadFile] = File(...), dummy_table: UploadFile = File(...), outcome: str = Form(''), outcome_positive: str = Form(''), adjustment_variables: str = Form('')):
     job_id = uuid.uuid4().hex
     datasets, names = [], []
     for upload in dataset:
-        datasets.append(await upload.read())
-        names.append(upload.filename or 'upload.csv')
+        datasets.append(await upload.read()); names.append(upload.filename or 'upload.csv')
     dummy = await dummy_table.read()
     positive = [x.strip() for x in outcome_positive.split(',') if x.strip()]
     adjustments = [x.strip() for x in adjustment_variables.split(',') if x.strip()]
     with _lock:
-        _jobs[job_id] = {
-            'job_id': job_id, 'status': 'queued', 'percent': 0,
-            'stage': 'Queued for analysis', 'eta_seconds': None,
-            'elapsed_seconds': 0, 'error': None, 'logs': [],
-        }
+        _jobs[job_id] = {'job_id': job_id, 'status': 'queued', 'percent': 0, 'stage': 'Queued for analysis', 'eta_seconds': None, 'elapsed_seconds': 0, 'error': None, 'logs': []}
     _log(job_id, "Analysis job queued")
     _log(job_id, f"Outcome: {outcome.strip() or 'auto-detect'}")
     _log(job_id, f"Positive values: {', '.join(positive) if positive else 'auto-detect'}")
     _log(job_id, f"Adjusted RR covariates: {', '.join(adjustments) if adjustments else 'none'}")
-    background_tasks.add_task(_worker, job_id, datasets, names, dummy, dummy_table.filename or 'dummy.xlsx',
-                              outcome.strip(), positive, adjustments)
+    background_tasks.add_task(_worker, job_id, datasets, names, dummy, dummy_table.filename or 'dummy.xlsx', outcome.strip(), positive, adjustments)
     return {'job_id': job_id, 'status': 'queued', 'percent': 0, 'stage': 'Queued for analysis'}
+
+
+@router.post("/data-intelligence")
+async def data_intelligence(files: list[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(422, 'Upload at least one Excel workbook')
+    if len(files) > 10:
+        raise HTTPException(422, 'Maximum 10 workbooks per inspection')
+    payload = []
+    for upload in files:
+        name = upload.filename or 'workbook.xlsx'
+        if not name.lower().endswith(('.xlsx', '.xls', '.xlsm')):
+            raise HTTPException(422, f'Unsupported workbook: {name}. Use XLSX, XLS or XLSM.')
+        payload.append((name, await upload.read()))
+    try:
+        return profile_multiple_workbooks(payload)
+    except Exception as exc:
+        raise HTTPException(422, f'Unable to inspect workbook(s): {exc}') from exc
 
 
 @router.get("/{job_id}")
 def job_status(job_id: str):
     with _lock:
         job = _jobs.get(job_id)
-        if not job:
-            raise HTTPException(404, 'Analysis job not found')
+        if not job: raise HTTPException(404, 'Analysis job not found')
         return {k: v for k, v in job.items() if k != 'output'}
 
 
@@ -118,8 +108,7 @@ def job_status(job_id: str):
 def job_logs(job_id: str):
     with _lock:
         job = _jobs.get(job_id)
-        if not job:
-            raise HTTPException(404, 'Analysis job not found')
+        if not job: raise HTTPException(404, 'Analysis job not found')
         return {'job_id': job_id, 'status': job.get('status'), 'logs': list(job.get('logs', []))}
 
 
@@ -127,11 +116,7 @@ def job_logs(job_id: str):
 def job_download(job_id: str):
     with _lock:
         job = _jobs.get(job_id)
-        if not job:
-            raise HTTPException(404, 'Analysis job not found')
-        if job.get('status') != 'completed':
-            raise HTTPException(409, 'Analysis is not complete yet')
-        output = job['output']
-        filename = job['filename']
-    return StreamingResponse(io.BytesIO(output), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                             headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+        if not job: raise HTTPException(404, 'Analysis job not found')
+        if job.get('status') != 'completed': raise HTTPException(409, 'Analysis is not complete yet')
+        output, filename = job['output'], job['filename']
+    return StreamingResponse(io.BytesIO(output), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': f'attachment; filename="{filename}"'})
