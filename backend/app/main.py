@@ -10,9 +10,9 @@ from .openeepi_engine import screening as openeepi_screening, calculate as opene
 from .dummy_table_engine import analyse_dummy_table
 from .dummy_table_parser import build_spec
 from .dummy_table_fill import fill_dummy_table
-from .rr_analysis import crude_rr, adjusted_rr, format_rr
+from .rr_analysis import crude_rr, adjusted_rr, format_rr, _binary
 
-app = FastAPI(title='Medical Data Analysis API', version='1.2.0')
+app = FastAPI(title='Medical Data Analysis API', version='1.2.1')
 ALLOWED_SUFFIXES={'.csv','.xlsx','.xls','.dta','.tsv','.docx'}
 app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
 
@@ -32,10 +32,8 @@ def load_dataframe(filename,content):
                 rows=[[cell.text.strip() for cell in row.cells] for row in table.rows]
                 if rows: tables.append(rows)
             if not tables: raise ValueError('DOCX contains no readable table rows.')
-            # Prefer the largest table because it is most likely the data table.
             rows=max(tables,key=lambda x: len(x)*max(len(r) for r in x))
-            width=max(len(r) for r in rows)
-            rows=[r+['']*(width-len(r)) for r in rows]
+            width=max(len(r) for r in rows); rows=[r+['']*(width-len(r)) for r in rows]
             header=rows[0]
             if len(set(header)) != len(header): header=[f'V{i+1}' for i in range(width)]
             return pd.DataFrame(rows[1:],columns=header)
@@ -58,14 +56,10 @@ async def inspect_data(file:UploadFile=File(...)):
 
 @app.post('/api/v1/data/document')
 async def inspect_document(file:UploadFile=File(...)):
-    name=file.filename or 'document.docx'
-    content=await file.read()
-    if not name.lower().endswith('.docx'):
-        raise HTTPException(400,'Document extraction currently supports DOCX. DOC/PDF/RTF remain reference uploads.')
+    name=file.filename or 'document.docx'; content=await file.read()
+    if not name.lower().endswith('.docx'): raise HTTPException(400,'Document extraction currently supports DOCX. DOC/PDF/RTF remain reference uploads.')
     try:
-        doc=Document(io.BytesIO(content))
-        paragraphs=[p.text.strip() for p in doc.paragraphs if p.text.strip()]
-        tables=[]
+        doc=Document(io.BytesIO(content)); paragraphs=[p.text.strip() for p in doc.paragraphs if p.text.strip()]; tables=[]
         for i,table in enumerate(doc.tables,1):
             rows=[[cell.text.strip() for cell in row.cells] for row in table.rows]
             if rows: tables.append({'table_number':i,'rows':rows,'row_count':len(rows),'column_count':max(len(r) for r in rows)})
@@ -100,8 +94,7 @@ async def roc_endpoint(file:UploadFile=File(...),test:str='',outcome:str=''):
 @app.post('/api/v1/analysis/dummy-table')
 async def dummy_table_endpoint(dataset:UploadFile=File(...), specification:str=Form(...)):
     try:
-        df=load_dataframe(dataset.filename or 'upload.csv',await dataset.read()); spec=json.loads(specification)
-        return {'method':'dummy_table_analysis','results':analyse_dummy_table(df,spec)}
+        df=load_dataframe(dataset.filename or 'upload.csv',await dataset.read()); spec=json.loads(specification); return {'method':'dummy_table_analysis','results':analyse_dummy_table(df,spec)}
     except json.JSONDecodeError as exc: raise HTTPException(422,f'Invalid dummy-table specification JSON: {exc}') from exc
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
 
@@ -109,35 +102,27 @@ async def dummy_table_endpoint(dataset:UploadFile=File(...), specification:str=F
 async def dummy_table_template_endpoint(dataset:UploadFile=File(...), dummy_table:UploadFile=File(...)):
     dataset_bytes=await dataset.read(); dummy_bytes=await dummy_table.read(); df=load_dataframe(dataset.filename or 'upload.csv',dataset_bytes)
     try:
-        spec=build_spec(df,dummy_bytes,dummy_table.filename or 'dummy.xlsx')
-        return {'method':'dummy_table_template_analysis','results':{'dataset_filename':dataset.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'dummy_filename':dummy_table.filename,'sheets':spec['sheets'],'rows_spec':spec['rows_spec']}}
+        spec=build_spec(df,dummy_bytes,dummy_table.filename or 'dummy.xlsx'); return {'method':'dummy_table_template_analysis','results':{'dataset_filename':dataset.filename,'rows':int(df.shape[0]),'columns':int(df.shape[1]),'dummy_filename':dummy_table.filename,'sheets':spec['sheets'],'rows_spec':spec['rows_spec']}}
     except Exception as exc: raise HTTPException(422,f'Unable to parse dummy table: {exc}') from exc
 
 @app.post('/api/v1/dummy-table/fill')
 async def dummy_table_fill_endpoint(dataset:list[UploadFile]=File(...),dummy_table:UploadFile=File(...),outcome:str=Form(''),outcome_positive:str=Form(''),adjustment_variables:str=Form('')):
     try:
         dataset_bytes=[]; dataset_names=[]
-        for upload in dataset:
-            dataset_bytes.append(await upload.read()); dataset_names.append(upload.filename or 'upload.csv')
-        dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'
-        positive=[x.strip() for x in outcome_positive.split(',') if x.strip()] or None
-        adjustments=[x.strip() for x in adjustment_variables.split(',') if x.strip()] or None
+        for upload in dataset: dataset_bytes.append(await upload.read()); dataset_names.append(upload.filename or 'upload.csv')
+        dummy_bytes=await dummy_table.read(); dummy_name=dummy_table.filename or 'dummy.xlsx'; positive=[x.strip() for x in outcome_positive.split(',') if x.strip()] or None; adjustments=[x.strip() for x in adjustment_variables.split(',') if x.strip()] or None
         output,meta=fill_dummy_table(dataset_bytes,dataset_names,dummy_bytes,dummy_name,outcome=outcome.strip() or None,outcome_positive=positive,adjustment_variables=adjustments)
-        base=dummy_name.rsplit('.',1)[0]
-        return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
+        base=dummy_name.rsplit('.',1)[0]; return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{base}_filled.xlsx"','X-Dummy-Analysis-Meta':json.dumps(meta,separators=(',',':'))})
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     except Exception as exc: raise HTTPException(500,f'Unable to fill dummy table: {exc}') from exc
 
 @app.post('/api/v1/analysis/rr-dummy')
 async def rr_dummy_endpoint(file:UploadFile=File(...),config:str=Form(...)):
     try:
-        cfg=json.loads(config); df=load_dataframe(file.filename or 'upload.csv',await file.read())
-        outcome_col=cfg['outcome']; exposure_col=cfg['exposure']; covariates=cfg.get('covariates',[])
+        cfg=json.loads(config); df=load_dataframe(file.filename or 'upload.csv',await file.read()); outcome_col=cfg['outcome']; exposure_col=cfg['exposure']; covariates=cfg.get('covariates',[])
         if outcome_col not in df.columns or exposure_col not in df.columns: raise HTTPException(422,'Outcome or exposure variable was not found in dataset')
-        y=_binary(df[outcome_col],cfg.get('outcome_positive',[1,'1','yes','positive','unfavourable','no adherence']))
-        e=_binary(df[exposure_col],cfg.get('exposure_positive',[1,'1','intervention','case']))
-        crude=crude_rr(y,e)
-        adj=adjusted_rr(pd.DataFrame({'_y':y,'_e':e,**{c:df[c] for c in covariates if c in df.columns}}),'_y','_e',[c for c in covariates if c in df.columns],reference=0)
+        y=_binary(df[outcome_col],cfg.get('outcome_positive',[1,'1','yes','positive','unfavourable','no adherence'])); e=_binary(df[exposure_col],cfg.get('exposure_positive',[1,'1','intervention','case']))
+        crude=crude_rr(y,e); adj=adjusted_rr(pd.DataFrame({'_y':y,'_e':e,**{c:df[c] for c in covariates if c in df.columns}}),'_y','_e',[c for c in covariates if c in df.columns],reference=0)
         return {'method':'crude_and_adjusted_rr','results':{'crude':crude,'adjusted':adj,'formatted':{'crude':format_rr(crude),'adjusted':format_rr(adj)}}}
     except json.JSONDecodeError as exc: raise HTTPException(422,f'Invalid RR configuration JSON: {exc}') from exc
     except KeyError as exc: raise HTTPException(422,f'Missing RR configuration field: {exc.args[0]}') from exc
