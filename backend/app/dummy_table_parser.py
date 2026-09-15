@@ -1,6 +1,7 @@
 import io, re
 from typing import Any
 import pandas as pd
+from docx import Document
 
 
 def norm(value: Any) -> str:
@@ -26,12 +27,26 @@ def best_column(columns, label):
     return (best, round(score, 2)) if score >= 0.5 else (None, round(score, 2))
 
 
+def _docx_frames(content: bytes):
+    doc = Document(io.BytesIO(content))
+    frames = {}
+    for i, table in enumerate(doc.tables, 1):
+        rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+        if rows:
+            width = max(len(r) for r in rows)
+            frames[f'Table {i}'] = pd.DataFrame([r + [''] * (width - len(r)) for r in rows])
+    return frames
+
+
 def read_dummy(content: bytes, filename: str):
     ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
     if ext in ('xlsx', 'xls'):
         book = pd.ExcelFile(io.BytesIO(content))
         sheets = book.sheet_names
         frames = {s: pd.read_excel(io.BytesIO(content), sheet_name=s, header=None) for s in sheets}
+    elif ext == 'docx':
+        frames = _docx_frames(content)
+        sheets = list(frames.keys()) or ['DOCX']
     elif ext == 'csv':
         sheets = ['CSV']
         frames = {'CSV': pd.read_csv(io.BytesIO(content), header=None)}
@@ -52,7 +67,6 @@ def build_spec(dataset: pd.DataFrame, dummy_content: bytes, dummy_filename: str)
     rows_spec = []
     columns = [str(c) for c in dataset.columns]
     for sheet, frame in frames.items():
-        # Look at the first non-empty column as the row-label column.
         for idx, row in frame.iterrows():
             vals = [x for x in row.tolist() if pd.notna(x) and str(x).strip()]
             if not vals:
@@ -69,7 +83,6 @@ def build_spec(dataset: pd.DataFrame, dummy_content: bytes, dummy_filename: str)
                 'confidence': confidence,
                 'analysis': 'categorical n (%) + group comparison' if variable else 'needs variable mapping'
             })
-    # Deduplicate repeated labels while preserving first occurrence.
     seen=set(); unique=[]
     for r in rows_spec:
         key=(r['sheet'], r['label'])
