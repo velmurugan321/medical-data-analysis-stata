@@ -8,6 +8,8 @@ from fastapi.responses import StreamingResponse
 
 from .dummy_table_fill import fill_dummy_table
 from .data_intelligence import profile_multiple_workbooks, validate_variable_confirmations
+from .workflow_engine import read_dataset, data_quality_plus, diagnostic_validated, roc_validated
+from .analysis_engine import robust_poisson, logistic_regression
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["analysis-progress"])
 _jobs = {}
@@ -80,61 +82,87 @@ async def start_dummy_job(background_tasks: BackgroundTasks, dataset: list[Uploa
 
 @router.post("/data-intelligence")
 async def data_intelligence(files: list[UploadFile] = File(...)):
-    if not files:
-        raise HTTPException(422, 'Upload at least one Excel workbook')
-    if len(files) > 10:
-        raise HTTPException(422, 'Maximum 10 workbooks per inspection')
-    payload = []
+    if not files: raise HTTPException(422, 'Upload at least one Excel workbook')
+    if len(files) > 10: raise HTTPException(422, 'Maximum 10 workbooks per inspection')
+    payload=[]
     for upload in files:
-        name = upload.filename or 'workbook.xlsx'
-        if not name.lower().endswith(('.xlsx', '.xls', '.xlsm')):
-            raise HTTPException(422, f'Unsupported workbook: {name}. Use XLSX, XLS or XLSM.')
+        name=upload.filename or 'workbook.xlsx'
+        if not name.lower().endswith(('.xlsx','.xls','.xlsm')): raise HTTPException(422, f'Unsupported workbook: {name}. Use XLSX, XLS or XLSM.')
         payload.append((name, await upload.read()))
-    try:
-        return profile_multiple_workbooks(payload)
-    except Exception as exc:
-        raise HTTPException(422, f'Unable to inspect workbook(s): {exc}') from exc
+    try: return profile_multiple_workbooks(payload)
+    except Exception as exc: raise HTTPException(422, f'Unable to inspect workbook(s): {exc}') from exc
 
 
 @router.post("/validate-variable-contract")
 async def validate_variable_contract(payload: dict):
     try:
-        confirmations = payload.get('confirmations') if isinstance(payload, dict) else None
+        confirmations=payload.get('confirmations') if isinstance(payload,dict) else None
         return validate_variable_confirmations(confirmations)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
+
+@router.post("/workflow/quality")
+async def workflow_quality(file: UploadFile = File(...), id_variables: str = Form('')):
+    try:
+        df=read_dataset(file.filename or 'upload.csv', await file.read()); ids=[x.strip() for x in id_variables.split(',') if x.strip()]
+        return {'method':'enhanced_data_quality','results':data_quality_plus(df,ids)}
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
+
+@router.post("/workflow/diagnostic")
+async def workflow_diagnostic(file: UploadFile = File(...), index_test: str = Form(...), reference_standard: str = Form(...), index_positive: str = Form(...), reference_positive: str = Form(...), index_negative: str = Form(''), reference_negative: str = Form('')):
+    try:
+        df=read_dataset(file.filename or 'upload.csv', await file.read()); parse=lambda s:[x.strip() for x in s.split(',') if x.strip()]
+        return {'method':'validated_diagnostic_accuracy','results':diagnostic_validated(df,index_test,reference_standard,parse(index_positive),parse(reference_positive),parse(index_negative),parse(reference_negative))}
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
+
+@router.post("/workflow/roc")
+async def workflow_roc(file: UploadFile = File(...), test: str = Form(...), outcome: str = Form(...), positive_values: str = Form(...)):
+    try:
+        df=read_dataset(file.filename or 'upload.csv', await file.read()); return {'method':'validated_roc_auc','results':roc_validated(df,test,outcome,[x.strip() for x in positive_values.split(',') if x.strip()])}
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+
+
+@router.post("/workflow/regression")
+async def workflow_regression(file: UploadFile = File(...), config: str = Form(...)):
+    try:
+        cfg=json.loads(config); df=read_dataset(file.filename or 'upload.csv', await file.read()); kind=cfg.get('model','poisson'); fn=robust_poisson if kind=='poisson' else logistic_regression
+        result=fn(df,cfg['outcome'],cfg.get('predictors',[]),cfg.get('categorical_predictors',[]),cfg.get('reference_categories',{}))
+        return {'method':kind,'results':result}
+    except (ValueError, KeyError, json.JSONDecodeError, np.linalg.LinAlgError) as exc: raise HTTPException(422,str(exc)) from exc
 
 
 @router.get("/{job_id}")
 def job_status(job_id: str):
     with _lock:
-        job = _jobs.get(job_id)
-        if not job: raise HTTPException(404, 'Analysis job not found')
-        return {k: v for k, v in job.items() if k != 'output'}
+        job=_jobs.get(job_id)
+        if not job: raise HTTPException(404,'Analysis job not found')
+        return {k:v for k,v in job.items() if k!='output'}
 
 
 @router.get("/{job_id}/logs")
 def job_logs(job_id: str):
     with _lock:
-        job = _jobs.get(job_id)
-        if not job: raise HTTPException(404, 'Analysis job not found')
-        return {'job_id': job_id, 'status': job.get('status'), 'logs': list(job.get('logs', []))}
+        job=_jobs.get(job_id)
+        if not job: raise HTTPException(404,'Analysis job not found')
+        return {'job_id':job_id,'status':job.get('status'),'logs':list(job.get('logs',[]))}
 
 
 @router.get("/{job_id}/result")
 def job_result(job_id: str):
     with _lock:
-        job = _jobs.get(job_id)
-        if not job: raise HTTPException(404, 'Analysis job not found')
-        if job.get('status') != 'completed': raise HTTPException(409, 'Analysis is not complete yet')
-        return {'job_id': job_id, 'status': job['status'], 'filename': job['filename'], 'elapsed_seconds': job.get('elapsed_seconds'), 'meta': job.get('meta', {})}
+        job=_jobs.get(job_id)
+        if not job: raise HTTPException(404,'Analysis job not found')
+        if job.get('status')!='completed': raise HTTPException(409,'Analysis is not complete yet')
+        return {'job_id':job_id,'status':job['status'],'filename':job['filename'],'elapsed_seconds':job.get('elapsed_seconds'),'meta':job.get('meta',{})}
 
 
 @router.get("/{job_id}/download")
 def job_download(job_id: str):
     with _lock:
-        job = _jobs.get(job_id)
-        if not job: raise HTTPException(404, 'Analysis job not found')
-        if job.get('status') != 'completed': raise HTTPException(409, 'Analysis is not complete yet')
-        output, filename = job['output'], job['filename']
-    return StreamingResponse(io.BytesIO(output), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+        job=_jobs.get(job_id)
+        if not job: raise HTTPException(404,'Analysis job not found')
+        if job.get('status')!='completed': raise HTTPException(409,'Analysis is not complete yet')
+        output,filename=job['output'],job['filename']
+    return StreamingResponse(io.BytesIO(output),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{filename}"'})
