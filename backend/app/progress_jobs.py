@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from fastapi.responses import StreamingResponse
 
 from .dummy_table_fill import fill_dummy_table
-from .data_intelligence import profile_multiple_workbooks
+from .data_intelligence import profile_multiple_workbooks, validate_variable_confirmations
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["analysis-progress"])
 _jobs = {}
@@ -96,6 +96,15 @@ async def data_intelligence(files: list[UploadFile] = File(...)):
         raise HTTPException(422, f'Unable to inspect workbook(s): {exc}') from exc
 
 
+@router.post("/validate-variable-contract")
+async def validate_variable_contract(payload: dict):
+    try:
+        confirmations = payload.get('confirmations') if isinstance(payload, dict) else None
+        return validate_variable_confirmations(confirmations)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.get("/{job_id}")
 def job_status(job_id: str):
     with _lock:
@@ -110,6 +119,15 @@ def job_logs(job_id: str):
         job = _jobs.get(job_id)
         if not job: raise HTTPException(404, 'Analysis job not found')
         return {'job_id': job_id, 'status': job.get('status'), 'logs': list(job.get('logs', []))}
+
+
+@router.get("/{job_id}/result")
+def job_result(job_id: str):
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job: raise HTTPException(404, 'Analysis job not found')
+        if job.get('status') != 'completed': raise HTTPException(409, 'Analysis is not complete yet')
+        return {'job_id': job_id, 'status': job['status'], 'filename': job['filename'], 'elapsed_seconds': job.get('elapsed_seconds'), 'meta': job.get('meta', {})}
 
 
 @router.get("/{job_id}/download")
