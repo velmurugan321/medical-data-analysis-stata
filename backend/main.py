@@ -34,6 +34,19 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+@app.get("/")
+def root() -> dict[str, Any]:
+    return {
+        "status": "online",
+        "service": "Medical Data Analysis Stata Engine",
+        "version": "0.1.0",
+        "endpoints": {
+            "health": "/health",
+            "stata_read": "/stata/read",
+        },
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -49,8 +62,7 @@ async def read_stata(file: UploadFile = File(...)) -> dict[str, Any]:
     if not data:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
 
-    suffix = ".dta"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dta") as tmp:
         tmp.write(data)
         temp_path = tmp.name
 
