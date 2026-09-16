@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "Medical Data Analysis",
+    "slug": "medical-data-analysis",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": { "resizeMode": "contain", "backgroundColor": "#f8fafc" },
+    "android": { "package": "com.velmurugan.medicaldataanalysis" },
+    "ios": { "bundleIdentifier": "com.velmurugan.medicaldataanalysis" }
+  }
+}
