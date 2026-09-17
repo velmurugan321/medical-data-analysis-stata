@@ -6,8 +6,7 @@ import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { Ionicons } from '@expo/vector-icons';
 
-// Set this to your deployed FastAPI URL for .dta processing.
-const STATA_API_URL = 'https://YOUR-RENDER-SERVICE.onrender.com';
+const STATA_API_URL = 'https://medical-data-analysis-stata-api.onrender.com';
 
 const modules = [
   { title: 'Data Upload', icon: 'cloud-upload-outline', text: 'CSV, Excel and Stata .dta' },
@@ -45,13 +44,24 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [rows, setRows] = useState([]);
   const [stataMetadata, setStataMetadata] = useState({});
+  const [excelSheets, setExcelSheets] = useState([]);
+  const [selectedSheet, setSelectedSheet] = useState('');
+  const [excelWorkbook, setExcelWorkbook] = useState(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState('dashboard');
 
+  function loadExcelSheet(workbook, sheetName) {
+    const sheet = workbook.Sheets[sheetName];
+    const parsed = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    const validRows = parsed.filter((r) => Object.keys(r).length > 0);
+    setRows(validRows);
+    setSelectedSheet(sheetName);
+    setStataMetadata({});
+    setTab('variables');
+    Alert.alert('Sheet loaded', `${sheetName}\n${validRows.length.toLocaleString()} observations • ${validRows.length ? Object.keys(validRows[0]).length : 0} variables`);
+  }
+
   async function uploadStata(asset) {
-    if (STATA_API_URL.includes('YOUR-RENDER-SERVICE')) {
-      throw new Error('Stata API is not configured yet. Deploy the backend and set STATA_API_URL.');
-    }
     const form = new FormData();
     form.append('file', { uri: asset.uri, name: asset.name, type: 'application/octet-stream' });
     const response = await fetch(`${STATA_API_URL}/stata/read`, { method: 'POST', body: form, headers: { Accept: 'application/json' } });
@@ -71,6 +81,8 @@ export default function App() {
       const lower = asset.name.toLowerCase();
       let parsedRows = [];
       let metadata = {};
+      setExcelSheets([]);
+      setExcelWorkbook(null);
       if (lower.endsWith('.csv')) {
         const text = await FileSystem.readAsStringAsync(asset.uri);
         const parsed = Papa.parse(text, { header: true, skipEmptyLines: true, dynamicTyping: false });
@@ -78,8 +90,14 @@ export default function App() {
       } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
         const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
         const workbook = XLSX.read(base64, { type: 'base64' });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        parsedRows = XLSX.utils.sheet_to_json(firstSheet, { defval: '' });
+        const sheets = workbook.SheetNames;
+        setExcelWorkbook(workbook);
+        setExcelSheets(sheets);
+        setFile(asset);
+        setSelectedSheet(sheets[0] || '');
+        if (sheets.length) loadExcelSheet(workbook, sheets[0]);
+        else setRows([]);
+        return;
       } else if (lower.endsWith('.dta')) {
         const response = await uploadStata(asset);
         parsedRows = response.data || [];
@@ -108,7 +126,10 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.header}><View style={{ flex: 1 }}><Text style={styles.eyebrow}>MEDICAL DATA ANALYSIS</Text><Text style={styles.title}>Analysis workspace</Text><Text style={styles.subtitle}>Import your dataset and inspect variables before statistical analysis.</Text></View><View style={styles.avatar}><Text style={styles.avatarText}>MD</Text></View></View>
         <View style={styles.nav}>{['dashboard', 'variables', 'descriptive'].map((item) => <Pressable key={item} onPress={() => setTab(item)} style={[styles.navItem, tab === item && styles.navActive]}><Text style={[styles.navText, tab === item && styles.navTextActive]}>{item[0].toUpperCase() + item.slice(1)}</Text></Pressable>)}</View>
-        <Pressable style={styles.upload} onPress={pickData} disabled={loading}><View style={styles.uploadIcon}>{loading ? <ActivityIndicator color="#fff" /> : <Ionicons name="cloud-upload-outline" size={28} color="#fff" />}</View><View style={{ flex: 1 }}><Text style={styles.uploadTitle}>{file ? file.name : 'Upload your dataset'}</Text><Text style={styles.uploadText}>{file ? `${rows.length.toLocaleString()} observations • ${summary.length} variables` : 'CSV • Excel • Stata .dta'}</Text></View><Ionicons name="arrow-forward" size={22} color="#fff" /></Pressable>
+        <Pressable style={styles.upload} onPress={pickData} disabled={loading}><View style={styles.uploadIcon}>{loading ? <ActivityIndicator color="#fff" /> : <Ionicons name="cloud-upload-outline" size={28} color="#fff" />}</View><View style={{ flex: 1 }}><Text style={styles.uploadTitle}>{file ? file.name : 'Upload your dataset'}</Text><Text style={styles.uploadText}>{file ? `${rows.length.toLocaleString()} observations • ${summary.length} variables${selectedSheet ? ` • ${selectedSheet}` : ''}` : 'CSV • Excel • Stata .dta'}</Text></View><Ionicons name="arrow-forward" size={22} color="#fff" /></Pressable>
+
+        {excelSheets.length > 1 && <><Text style={styles.section}>Excel sheets</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }} contentContainerStyle={{ gap: 8 }}>{excelSheets.map((sheet) => <Pressable key={sheet} onPress={() => loadExcelSheet(excelWorkbook, sheet)} style={[styles.sheetChip, selectedSheet === sheet && styles.sheetChipActive]}><Text style={[styles.sheetText, selectedSheet === sheet && styles.sheetTextActive]}>{sheet}</Text></Pressable>)}</ScrollView></>}
+
         {tab === 'dashboard' && <><Text style={styles.section}>Analysis modules</Text><View style={styles.grid}>{modules.map((m, i) => <Pressable key={m.title} style={styles.card} onPress={() => setTab(i === 0 ? 'dashboard' : i === 1 ? 'variables' : i === 2 ? 'descriptive' : 'dashboard')}><View style={styles.cardIcon}><Ionicons name={m.icon} size={22} color="#0f766e" /></View><Text style={styles.cardTitle}>{m.title}</Text><Text style={styles.cardText}>{m.text}</Text></Pressable>)}</View></>}
         {tab === 'variables' && <><Text style={styles.section}>Variable View</Text>{!rows.length ? <Text style={styles.empty}>Upload a CSV, Excel or Stata .dta dataset to see variables.</Text> : summary.map((v) => <View key={v.name} style={styles.variableRow}><View style={{ flex: 1 }}><Text style={styles.varName}>{v.name}</Text>{v.label ? <Text style={styles.label}>{v.label}</Text> : null}<Text style={styles.varMeta}>{v.type} • {v.unique} unique • {v.missing} missing{v.stataFormat ? ` • ${v.stataFormat}` : ''}</Text>{v.valueLabel ? <Text style={styles.varMeta}>Value label: {v.valueLabel}</Text> : null}</View>{v.mean !== null && <View style={styles.metric}><Text style={styles.metricValue}>{v.mean.toFixed(2)}</Text><Text style={styles.metricLabel}>Mean</Text></View>}</View>)}</>}
         {tab === 'descriptive' && <><Text style={styles.section}>Descriptive Summary</Text>{!rows.length ? <Text style={styles.empty}>Upload a dataset first.</Text> : numericVars.map((v) => <View key={v.name} style={styles.statCard}><Text style={styles.varName}>{v.name}</Text><View style={styles.statGrid}><Text>Mean: {v.mean.toFixed(2)}</Text><Text>SD: {v.sd?.toFixed(2) ?? '—'}</Text><Text>Median: {v.median.toFixed(2)}</Text><Text>Missing: {v.missing}</Text></View></View>)}</>}
@@ -118,4 +139,4 @@ export default function App() {
   );
 }
 
-const styles = StyleSheet.create({ safe: { flex: 1, backgroundColor: '#f8fafc' }, container: { padding: 20, paddingBottom: 40 }, header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }, eyebrow: { fontSize: 11, fontWeight: '800', letterSpacing: 1.4, color: '#0f766e', marginBottom: 6 }, title: { fontSize: 27, fontWeight: '800', color: '#0f172a' }, subtitle: { marginTop: 6, color: '#64748b', fontSize: 14, lineHeight: 20, maxWidth: 290 }, avatar: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center' }, avatarText: { color: '#fff', fontWeight: '800' }, nav: { flexDirection: 'row', backgroundColor: '#e2e8f0', borderRadius: 14, padding: 4, marginBottom: 16 }, navItem: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 10 }, navActive: { backgroundColor: '#fff' }, navText: { fontSize: 12, color: '#64748b', fontWeight: '700' }, navTextActive: { color: '#0f766e' }, upload: { backgroundColor: '#0f766e', borderRadius: 20, padding: 18, flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 28 }, uploadIcon: { width: 50, height: 50, borderRadius: 15, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }, uploadTitle: { color: '#fff', fontSize: 16, fontWeight: '800' }, uploadText: { color: '#ccfbf1', marginTop: 4, fontSize: 12 }, section: { fontSize: 18, fontWeight: '800', color: '#0f172a', marginBottom: 14 }, grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, card: { width: '47.8%', backgroundColor: '#fff', borderRadius: 18, padding: 16, minHeight: 145, borderWidth: 1, borderColor: '#e2e8f0' }, cardIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: '#ccfbf1', alignItems: 'center', justifyContent: 'center', marginBottom: 13 }, cardTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a' }, cardText: { fontSize: 12, color: '#64748b', marginTop: 5, lineHeight: 17 }, variableRow: { backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0', flexDirection: 'row', alignItems: 'center' }, varName: { fontSize: 14, fontWeight: '800', color: '#0f172a' }, label: { fontSize: 11, color: '#334155', marginTop: 3 }, varMeta: { fontSize: 11, color: '#64748b', marginTop: 4 }, metric: { alignItems: 'flex-end', minWidth: 60 }, metricValue: { fontSize: 16, fontWeight: '800', color: '#0f766e' }, metricLabel: { fontSize: 9, color: '#64748b' }, empty: { color: '#64748b', backgroundColor: '#fff', padding: 18, borderRadius: 14 }, statCard: { backgroundColor: '#fff', padding: 16, borderRadius: 14, marginBottom: 10, borderWidth: 1, borderColor: '#e2e8f0' }, statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 10 }, status: { marginTop: 20, padding: 16, borderRadius: 18, backgroundColor: '#ecfdf5', flexDirection: 'row', gap: 12 }, statusTitle: { fontWeight: '800', color: '#115e59' }, statusText: { color: '#475569', fontSize: 12, lineHeight: 17, marginTop: 3 } });
+const styles = StyleSheet.create({ safe: { flex: 1, backgroundColor: '#f8fafc' }, container: { padding: 20, paddingBottom: 40 }, header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }, eyebrow: { fontSize: 11, fontWeight: '800', letterSpacing: 1.4, color: '#0f766e', marginBottom: 6 }, title: { fontSize: 27, fontWeight: '800', color: '#0f172a' }, subtitle: { marginTop: 6, color: '#64748b', fontSize: 14, lineHeight: 20, maxWidth: 290 }, avatar: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center' }, avatarText: { color: '#fff', fontWeight: '800' }, nav: { flexDirection: 'row', backgroundColor: '#e2e8f0', borderRadius: 14, padding: 4, marginBottom: 16 }, navItem: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 10 }, navActive: { backgroundColor: '#fff' }, navText: { fontSize: 12, color: '#64748b', fontWeight: '700' }, navTextActive: { color: '#0f766e' }, upload: { backgroundColor: '#0f766e', borderRadius: 20, padding: 18, flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 28 }, uploadIcon: { width: 50, height: 50, borderRadius: 15, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }, uploadTitle: { color: '#fff', fontSize: 16, fontWeight: '800' }, uploadText: { color: '#ccfbf1', marginTop: 4, fontSize: 12 }, section: { fontSize: 18, fontWeight: '800', color: '#0f172a', marginBottom: 14 }, sheetChip: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 12, paddingHorizontal: 13, paddingVertical: 9 }, sheetChipActive: { backgroundColor: '#ccfbf1', borderColor: '#0f766e' }, sheetText: { fontSize: 12, fontWeight: '700', color: '#475569' }, sheetTextActive: { color: '#115e59' }, grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, card: { width: '47.8%', backgroundColor: '#fff', borderRadius: 18, padding: 16, minHeight: 145, borderWidth: 1, borderColor: '#e2e8f0' }, cardIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: '#ccfbf1', alignItems: 'center', justifyContent: 'center', marginBottom: 13 }, cardTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a' }, cardText: { fontSize: 12, color: '#64748b', marginTop: 5, lineHeight: 17 }, variableRow: { backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: '#e2e8f0', flexDirection: 'row', alignItems: 'center' }, varName: { fontSize: 14, fontWeight: '800', color: '#0f172a' }, label: { fontSize: 11, color: '#334155', marginTop: 3 }, varMeta: { fontSize: 11, color: '#64748b', marginTop: 4 }, metric: { alignItems: 'flex-end', minWidth: 60 }, metricValue: { fontSize: 16, fontWeight: '800', color: '#0f766e' }, metricLabel: { fontSize: 9, color: '#64748b' }, empty: { color: '#64748b', backgroundColor: '#fff', padding: 18, borderRadius: 14 }, statCard: { backgroundColor: '#fff', padding: 16, borderRadius: 14, marginBottom: 10, borderWidth: 1, borderColor: '#e2e8f0' }, statGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 10 }, status: { marginTop: 20, padding: 16, borderRadius: 18, backgroundColor: '#ecfdf5', flexDirection: 'row', gap: 12 }, statusTitle: { fontWeight: '800', color: '#115e59' }, statusText: { color: '#475569', fontSize: 12, lineHeight: 17, marginTop: 3 } });
